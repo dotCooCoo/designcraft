@@ -95,6 +95,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                             let Some(para) = story.paras.get(i) else { break };
                             let rect = egui::Rect::from_min_size(egui::pos2(column.min.x, out.galley_pos.y + y), vec2(column.width(), 14.0));
                             ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
+                                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
                                 let name = crate::i18n::style_name(&app.ui.language, &para.style);
                                 crate::rtl::label(ui, egui::RichText::new(name).size(11.0).color(t.text_dim));
                             });
@@ -545,6 +546,22 @@ mod tests {
         assert!(!crate::UiState::from_preferences_json(&saved).unwrap().story_editor_style_column);
     }
 
+    /// A style name wider than the column is cut short at the column's edge, so it does not run
+    /// into the story text.
+    #[test]
+    fn a_long_style_name_stays_in_the_column() {
+        let mut h = story_editor_harness("Narrow story");
+        h.state_mut().app.run("view.storyEditorStyleColumn", json!({"width": 40})).unwrap();
+        h.run_steps(2);
+        let app = &h.state().app;
+        let para_style = &app.session.active().unwrap().doc.stories.values().next().unwrap().paras[0].style;
+        let style = crate::i18n::style_name(&app.ui.language, para_style).to_string();
+        let name = h.get_by_label(&style).rect();
+        let text = text_left(&h, "Narrow story");
+        assert!(name.width() <= 40.5, "the name {style:?} is cut to the column: {name:?}");
+        assert!(name.max.x <= text, "the name ends before the text: {name:?}, text at {text}");
+    }
+
     /// Dragging the bar between the style names and the text resizes the column; the text moves
     /// with the bar, and the width is remembered for the next time the editor opens.
     #[test]
@@ -607,6 +624,8 @@ mod tests {
         let mut app = DesignApp::new(designcraft_engine::Session::new(), Default::default());
         assert_eq!(app.run("view.storyEditorStyleColumn", json!({"width": 250})).unwrap(), json!({"on": true, "width": 250.0}));
         assert_eq!(app.run("view.storyEditorStyleColumn", json!({"width": 1000})).unwrap()["width"], json!(400.0));
+        assert_eq!(app.run("view.storyEditorStyleColumn", json!({"width": -1e40})).unwrap()["width"], json!(40.0));
+        assert_eq!(app.run("view.storyEditorStyleColumn", json!({"width": 1e40})).unwrap()["width"], json!(400.0));
         assert_eq!(app.run("view.storyEditorStyleColumn", json!({"on": false})).unwrap(), json!({"on": false, "width": 400.0}));
         assert_eq!(app.run("view.storyEditorStyleColumn", json!({})).unwrap()["on"], json!(true));
         assert!(app.run("view.storyEditorStyleColumn", json!({"width": "wide"})).is_err());

@@ -1605,7 +1605,8 @@ fn run_ui_inner(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
                 (on, width) => {
                     app.ui.story_editor_style_column = on.unwrap_or(app.ui.story_editor_style_column);
                     if let Some(w) = width {
-                        app.ui.story_editor_style_width = crate::story_editor::style_column_width(w as f32);
+                        app.ui.story_editor_style_width =
+                            crate::story_editor::style_column_width(w.clamp(f64::from(f32::MIN), f64::from(f32::MAX)) as f32);
                     }
                 }
             }
