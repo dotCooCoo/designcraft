@@ -1409,17 +1409,21 @@ fn duplicate_layer(s: &mut Session, p: &Value) -> Result<Value> {
             d.insert_item(r, copy, None)?;
         }
         // A story copy holds the same anchored objects as the original: they get ids of their own, and the stories of
-        // anchored text frames get copies in turn.
+        // anchored text frames get copies in turn. The story copies are taken in story order.
         let mut pending: Vec<StoryId> = stories.values().copied().collect();
+        pending.sort_unstable();
+        pending.reverse();
         while let Some(new) = pending.pop() {
             let Some(mut st) = d.story(new).cloned() else { continue };
             renumber_anchored(d, &mut st, new_id, &mut stories, &mut ids, &mut pending);
             d.stories.insert(new, Arc::new(st));
         }
         // Each story copy gets its frames in the original order, text anchors of its own, which its cross-references
-        // and those of the other copies point at, and tables with ids of their own.
+        // and those of the other copies point at, and tables with ids of their own, allocated in story order.
         let mut anchors = HashMap::new();
-        for (old, new) in &stories {
+        let mut order: Vec<(StoryId, StoryId)> = stories.iter().map(|(old, new)| (*old, *new)).collect();
+        order.sort_unstable_by_key(|(_, new)| *new);
+        for (old, new) in &order {
             let Some(mut st) = d.story(*new).cloned() else { continue };
             st.frames = src.story(*old).map(|o| o.frames.iter().filter_map(|f| ids.get(f).copied()).collect()).unwrap_or_default();
             for (k, a) in (1..).zip(st.anchors.iter_mut()) {
@@ -2114,6 +2118,33 @@ mod layer_tests {
         let d = &s.doc().unwrap().doc;
         assert_eq!(d.story(sid).unwrap().tables[&table].nrows(), 1, "the original table is unchanged");
         assert_eq!(d.story(copied).unwrap().tables[&new].nrows(), 2, "a command naming the copy's table changes the copy");
+    }
+
+    #[test]
+    fn duplicate_layer_numbers_copied_tables_and_anchored_objects_in_story_order() {
+        let mut s = crate::Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let base = s.doc().unwrap().doc.layers[0].id.0;
+        for k in 0..8 {
+            let y = 72 + 80 * k;
+            let text = json!({"rect": [72, y, 400, y + 60], "content": "text", "text": "Rows"});
+            let f = s.execute("frame.create", &text).unwrap()["id"].as_u64().unwrap();
+            let sid = s.doc().unwrap().doc.item(designcraft_doc::ItemId(f)).unwrap().text_frame().unwrap().story;
+            s.execute("text.select", &json!({"story": sid.0, "anchor": 4, "focus": 4})).unwrap();
+            s.execute("table.insert", &json!({"rows": 1, "cols": 2})).unwrap();
+            let b = s.execute("frame.create", &json!({"rect": [450, y, 474, y + 40]})).unwrap()["id"].as_u64().unwrap();
+            s.execute("anchored.insert", &json!({"ids": [b], "story": sid.0, "pos": 0})).unwrap();
+        }
+        let copy = s.execute("layer.duplicate", &json!({"id": base})).unwrap()["id"].as_u64().unwrap();
+        let d = &s.doc().unwrap().doc;
+        d.check().unwrap();
+        let mut stories: Vec<_> = on_layer(d, copy).iter().filter_map(|i| i.text_frame().map(|t| t.story)).collect();
+        stories.sort_unstable();
+        assert_eq!(stories.len(), 8);
+        let tables: Vec<u64> = stories.iter().map(|sid| *d.story(*sid).unwrap().tables.keys().next().unwrap()).collect();
+        let objects: Vec<u64> = stories.iter().map(|sid| d.story(*sid).unwrap().objects[0].item.id.0).collect();
+        assert!(tables.is_sorted(), "the copied tables take ids in story order: {tables:?}");
+        assert!(objects.is_sorted(), "the copied anchored objects take ids in story order: {objects:?}");
     }
 
     /// 40 stories, each holding two anchored text frames threaded in the next: 2^40 paths, 40 stories.

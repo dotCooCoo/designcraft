@@ -4562,6 +4562,10 @@ const TABLE: &[(&str, [&str; 5])] = &[
             "“{name}”的图层选项…",
         ],
     ),
+    (
+        "Duplicate Layer \"{name}\"",
+        ["Ebene „{name}“ duplizieren", "Dupliquer le calque « {name} »", "Duplicar capa «{name}»", "レイヤー「{name}」を複製", "复制图层“{name}”"],
+    ),
     ("Swatch Name:", ["Farbfeldname:", "Nom de la nuance :", "Nombre de muestra:", "スウォッチ名:", "色板名称:"]),
     (
         "Name with Color Value",
@@ -4964,6 +4968,20 @@ mod tests {
             } else {
                 assert_ne!(label, "Arrangement", "{name} still announces the English accessible name");
                 assert!(!label.trim().is_empty(), "{name}");
+            }
+        }
+    }
+
+    #[test]
+    fn duplicate_layer_menu_item_is_localized_in_every_interface_language() {
+        let key = "Duplicate Layer \"{name}\"";
+        for (code, name) in LANGUAGES {
+            let label = tr(code, key);
+            if code.is_empty() {
+                assert_eq!(label, key, "{name}");
+            } else {
+                assert_ne!(label, key, "{name} shows the Layers panel's Duplicate Layer item in English");
+                assert!(label.contains("{name}"), "{name}");
             }
         }
     }
