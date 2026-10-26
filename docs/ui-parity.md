@@ -16,7 +16,7 @@ basics of editing fail for too many users on Windows and Linux.
 | What | Value | How |
 |---|---|---|
 | InDesign 21.6 menu items matched (in scope) | 331 / 482 (69%) | script over the running app's menu dump; see target-app-parity.md |
-| Menu bar | 9 menus, 49 submenus, 340 items | `MENUS` in `crates/ui-egui/src/menus.rs` |
+| Menu bar | 9 menus, 62 submenus, 408 items | `MENUS` in `crates/ui-egui/src/menus.rs` |
 | Commands | 446 engine (188 in menus) + 99 UI | `crates/engine/src/cmd/*`, `UI_COMMANDS` |
 | Theme colours | measured hex values of Medium Dark, 4 brightness themes + High Contrast | `theme::Tokens` vs `11-observed-ui.md` §1 |
 
