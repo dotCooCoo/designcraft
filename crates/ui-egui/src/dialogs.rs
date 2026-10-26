@@ -3215,7 +3215,7 @@ fn diagonal_lines(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
             let on = d.fields.get("lines").and_then(Value::as_str) == Some(name);
             let text = crate::i18n::tr(&lang, label).to_string();
             let (r, resp) = ui.allocate_exact_size(egui::vec2(32.0, 32.0), egui::Sense::click());
-            resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, on, &text));
+            resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, on, &text));
             let resp = resp.on_hover_text(&text);
             if resp.clicked() {
                 d.fields.insert("lines".into(), json!(name));
