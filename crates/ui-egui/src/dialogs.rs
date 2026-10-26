@@ -1020,7 +1020,15 @@ pub fn open_go_to_row(app: &mut DesignApp) {
     };
     app.ui.dialog = Some(Dialog::new(
         "goToRow",
-        json!({"story": t["story"], "table": t["table"], "section": section, "row": n.to_string(), "hasHeader": h > 0, "hasFooter": f > 0}),
+        json!({
+            "uid": app.session.active().map(|doc| doc.uid),
+            "story": t["story"],
+            "table": t["table"],
+            "section": section,
+            "row": n.to_string(),
+            "hasHeader": h > 0,
+            "hasFooter": f > 0
+        }),
     ));
 }
 
@@ -3391,6 +3399,13 @@ pub fn confirm(app: &mut DesignApp) -> Result<Value, String> {
         }
         "ruby" => app.run("type.ruby", style_cjk::ruby_params(&d)),
         "goToRow" => {
+            // The story and table belong to the document the dialog was opened for: that document
+            // becomes active first, and when it has closed, nothing is selected.
+            let uid = d.fields.get("uid").and_then(Value::as_u64);
+            if uid.is_some() && uid != app.session.active().map(|doc| doc.uid) {
+                let Some(i) = app.session.documents().iter().position(|doc| Some(doc.uid) == uid) else { return Ok(Value::Null) };
+                app.run("file.activate", json!({"index": i}))?;
+            }
             // Anything but a whole number goes as typed, and the command's message names the fault.
             let typed = d.s("row").trim().to_string();
             let row = typed.parse::<u64>().map_or_else(|_| json!(typed), |n| json!(n));
@@ -11032,6 +11047,37 @@ mod tests {
         let range = app.session.active().unwrap().selection.cells.unwrap().range;
         assert_eq!((range.r0, range.r1, range.c0, range.c1), (20, 20, 0, 1));
         assert_eq!(crate::canvas::current_page(&app), Some(1), "the view goes to the page that shows the row");
+    }
+
+    /// Go to Row's OK goes to the row of the table in the document the dialog was opened for, even
+    /// when another document became active meanwhile; when that document has closed, nothing is selected.
+    #[test]
+    fn go_to_row_dialog_goes_to_the_document_it_was_opened_for() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        let table_doc = |app: &mut DesignApp, title: &str| {
+            app.run("file.new", json!({"title": title})).unwrap();
+            let r = app.run("frame.create", json!({"rect": [72, 72, 500, 700], "content": "text", "text": ""})).unwrap();
+            app.run("text.select", json!({"story": r["story"], "anchor": 0, "focus": 0})).unwrap();
+            app.run("table.insert", json!({"rows": 3, "cols": 2})).unwrap();
+        };
+        table_doc(&mut app, "first");
+        crate::menus::activate(&mut app, "table.goToRow", &Value::Null);
+        table_doc(&mut app, "second");
+        setup_fields(&mut app, json!({"row": "3"}));
+        confirm(&mut app).unwrap();
+        let active = app.session.active().unwrap();
+        assert_eq!(active.doc.title, "first", "the dialog's document becomes active");
+        assert_eq!(active.selection.cells.map(|c| (c.range.r0, c.range.r1)), Some((2, 2)));
+        let second = app.session.documents().iter().find(|d| d.doc.title == "second").unwrap();
+        assert!(second.selection.cells.is_none(), "the other document's selection stays");
+
+        crate::menus::activate(&mut app, "table.goToRow", &Value::Null);
+        app.run("file.close", json!({})).unwrap();
+        let before = app.session.active().unwrap().selection.clone();
+        setup_fields(&mut app, json!({"row": "1"}));
+        assert_eq!(confirm(&mut app), Ok(Value::Null));
+        assert!(app.ui.dialog.is_none());
+        assert_eq!(app.session.active().unwrap().selection, before, "the dialog's document closed");
     }
 
     #[test]

@@ -407,7 +407,7 @@ fn table_specs() -> Vec<CommandSpec> {
             ["Table"],
             None,
             "{row: number (from 1, counted within the section), section?: header|body|footer (default: body), story?, table?}: selects the row → {story, table, range, page: the page showing the row (from 1), or null when the row is overset}",
-            in_table,
+            in_table_or_ids,
             go_to_row
         ),
         cmd!(noundo "table.nextCell", "Next Cell", [], None, "{}", in_cell, |s, _| step_cell(s, true)),
@@ -2435,6 +2435,17 @@ mod go_to_row_tests {
         s.execute("table.options", &json!({"headerRows": 0, "footerRows": 0})).unwrap();
         assert!(s.execute("table.goToRow", &json!({"row": 1, "section": "header"})).is_err());
         assert!(s.execute("table.goToRow", &json!({"row": 1, "section": "footer"})).is_err());
+    }
+
+    #[test]
+    fn go_to_row_selects_a_row_of_a_named_table_outside_the_selection() {
+        let mut s = session();
+        let t = s.execute("table.get", &json!({})).unwrap();
+        let other = s.execute("frame.create", &json!({"rect": [72, 720, 500, 760], "content": "text", "text": "Notes"})).unwrap();
+        s.execute("text.select", &json!({"story": other["story"], "anchor": 0, "focus": 0})).unwrap();
+        assert!(s.execute("table.goToRow", &json!({"row": 2})).is_err(), "no table named and none selected");
+        s.execute("table.goToRow", &json!({"story": t["story"], "table": t["table"], "row": 2})).unwrap();
+        assert_eq!(selected(&s), CellRange { r0: 2, c0: 0, r1: 2, c1: 1 });
     }
 
     #[test]

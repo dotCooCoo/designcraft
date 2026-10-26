@@ -2576,6 +2576,10 @@ pub fn menu_enabled(app: &DesignApp, id: &str) -> bool {
     if id.starts_with("fit.") {
         return enabled(app, "object.fit");
     }
+    // Go to Row runs on a named table from anywhere; the menu item needs the selection in a table.
+    if id == "table.goToRow" {
+        return enabled(app, "table.selectColumn");
+    }
     if id == "guide.selectAll" && (!app.ui.guides || app.ui.guides_locked) {
         return false;
     }
@@ -3749,6 +3753,17 @@ mod tests {
             let dialog = app.ui.dialog.as_ref().map(|d| d.id.clone());
             assert_eq!(dialog.as_deref(), Some(format!("cmd:{id}").as_str()), "{id} opens its dialog");
         }
+    }
+
+    #[test]
+    fn go_to_row_is_enabled_in_a_table() {
+        let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let r = app.run("frame.create", json!({"rect": [72, 72, 500, 700], "content": "text", "text": "Notes"})).unwrap();
+        app.run("text.select", json!({"story": r["story"], "anchor": 0, "focus": 0})).unwrap();
+        assert!(!menu_enabled(&app, "table.goToRow"), "the insertion point is not in a table");
+        app.run("table.insert", json!({"rows": 2, "cols": 2})).unwrap();
+        assert!(menu_enabled(&app, "table.goToRow"));
     }
 
     #[test]
