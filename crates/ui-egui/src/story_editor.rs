@@ -23,6 +23,9 @@ const RULER_WIDTH: f32 = 34.0;
 const RULER_LABEL_GAP: f32 = 10.0;
 /// Color of the overset line and label.
 const OVERSET_RED: egui::Color32 = egui::Color32::from_rgb(230, 40, 40);
+/// The mark after each paragraph that a paragraph break ends while View › Story Editor › Show Paragraph
+/// Break Marks is on, as Type › Show Hidden Characters marks paragraph ends on the canvas.
+const PARAGRAPH_MARK: &str = "¶";
 
 /// The story open in the Story Editor. Story ids are counted per document, so the editor is bound
 /// to the document the story belongs to.
@@ -79,12 +82,16 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                     // Depth ruler: painted after the text too, beside the rows the lines start on.
                     let ruler = depths.as_ref().map(|_| ui.allocate_exact_size(vec2(RULER_WIDTH, 0.0), egui::Sense::hover()).0);
                     let mut text = story.text.clone();
+                    let font = egui::FontId::proportional(app.ui.story_editor_size.clamp(8.0, 36.0));
+                    // With paragraph break marks shown, the text wraps one text size short of the edge, so a
+                    // mark after a full row stays within the width the text has without marks.
+                    let width = if app.ui.story_editor_paragraph_marks { (ui.available_width() - font.size).max(font.size) } else { f32::INFINITY };
                     // The text field has a fixed id, so it keeps its focus and caret when the columns before it
                     // are shown or hidden.
                     let out = egui::TextEdit::multiline(&mut text)
                         .id(egui::Id::new("story_editor_text"))
-                        .font(egui::FontId::proportional(app.ui.story_editor_size.clamp(8.0, 36.0)))
-                        .desired_width(f32::INFINITY)
+                        .font(font.clone())
+                        .desired_width(width)
                         .desired_rows(20)
                         .frame(egui::Frame::NONE)
                         .show(ui);
@@ -110,6 +117,11 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                             dragged_width = Some(style_column_width(column.width() + drag.drag_delta().x));
                         }
                         drag.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Other, true, "Style name column divider"));
+                    }
+                    if app.ui.story_editor_paragraph_marks {
+                        for spot in paragraph_mark_spots(&out.galley) {
+                            ui.painter().text(out.galley_pos + spot.to_vec2(), egui::Align2::LEFT_TOP, PARAGRAPH_MARK, font.clone(), t.text_dim);
+                        }
                     }
                     let overset_y = overset.map(|o| {
                         let ci = char_offsets(&story.text, std::iter::once(o));
@@ -184,6 +196,12 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
 /// widest the bar allows, and the starting width when `width` is not a number.
 pub(crate) fn style_column_width(width: f32) -> f32 {
     if width.is_finite() { width.clamp(STYLE_COLUMN_RANGE.0, STYLE_COLUMN_RANGE.1) } else { STYLE_COLUMN_WIDTH }
+}
+
+/// Where the paragraph break marks go, in galley coordinates (each mark's top left): just after the
+/// last row of every paragraph that a paragraph break ends, past any spaces at its end.
+fn paragraph_mark_spots(galley: &egui::Galley) -> Vec<egui::Pos2> {
+    galley.rows.iter().filter(|row| row.ends_with_newline).map(|row| pos2(row.rect().max.x + 1.0, row.rect().min.y)).collect()
 }
 
 /// Vertical offset of the first laid-out row of each paragraph, from `(row y, row ends with a newline)`
@@ -631,6 +649,101 @@ mod tests {
         assert!(app.run("view.storyEditorStyleColumn", json!({"width": "wide"})).is_err());
         assert!(app.run("view.storyEditorStyleColumn", json!({"on": 1})).is_err());
         assert_eq!((app.ui.story_editor_style_column, app.ui.story_editor_style_width), (true, 400.0));
+    }
+
+    /// Every ¶ painted in the window: its rect and the rect it is clipped to.
+    fn paragraph_marks(h: &egui_kittest::Harness<'_, crate::test_window::Window>) -> Vec<(egui::Rect, egui::Rect)> {
+        fn walk(shape: &egui::Shape, clip: egui::Rect, out: &mut Vec<(egui::Rect, egui::Rect)>) {
+            match shape {
+                egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| walk(s, clip, out)),
+                egui::Shape::Text(t) if t.galley.text() == super::PARAGRAPH_MARK => out.push((t.visual_bounding_rect(), clip)),
+                _ => {}
+            }
+        }
+        let mut out = Vec::new();
+        for c in &h.output().shapes {
+            walk(&c.shape, c.clip_rect, &mut out);
+        }
+        out
+    }
+
+    /// View › Story Editor › Show/Hide Paragraph Break Marks: off at first; on, a ¶ follows each of the
+    /// first two paragraphs and none the last; the setting is remembered.
+    #[test]
+    fn paragraph_break_marks_show_and_hide_from_the_view_menu() {
+        let text = format!("First\n{}\nLast", "A paragraph long enough to wrap over several rows in the editor. ".repeat(12).trim_end());
+        let mut h = story_editor_harness(&text);
+        assert!(!h.state().app.ui.story_editor_paragraph_marks, "hidden by default");
+        let before = paragraph_marks(&h);
+        h.state_mut().app.run("view.storyEditorParagraphMarks", json!({})).unwrap();
+        h.run_steps(2);
+        let field = h.get_by(|n| n.role() == egui::accesskit::Role::MultilineTextInput && n.value().as_deref() == Some(text.as_str())).rect();
+        let marks: Vec<_> = paragraph_marks(&h).into_iter().filter(|m| !before.contains(m)).collect();
+        assert_eq!(marks.len(), 2, "one mark after each of the first two paragraphs: {marks:?}");
+        let (first, second) = (marks[0].0, marks[1].0);
+        assert!(first.min.x > field.min.x && first.min.x < field.center().x, "the first mark follows the short first row: {first:?} in {field:?}");
+        assert!(
+            second.min.y > first.min.y + 2.0 * first.height(),
+            "the second mark is below the first, past the wrapped paragraph's first rows: {first:?}, {second:?}"
+        );
+        let app = &h.state().app;
+        assert_eq!(crate::menus::checked(app, "view.storyEditorParagraphMarks", &json!({})), Some(true));
+        let saved = serde_json::to_vec(&app.ui).unwrap();
+        assert!(crate::UiState::from_preferences_json(&saved).unwrap().story_editor_paragraph_marks);
+        h.state_mut().app.run("view.storyEditorParagraphMarks", json!({})).unwrap();
+        h.run_steps(2);
+        assert_eq!(paragraph_marks(&h), before, "hiding them takes the marks away");
+    }
+
+    /// A paragraph that would just fill the editor's width wraps while the marks show, so its mark is
+    /// drawn within the width the text has without marks, not in the window's margin or cut off.
+    #[test]
+    fn a_mark_after_a_full_row_stays_in_the_window() {
+        let field = |h: &egui_kittest::Harness<'_, crate::test_window::Window>, text: &str| {
+            h.get_by(|n| n.role() == egui::accesskit::Role::MultilineTextInput && n.value().as_deref() == Some(text)).rect()
+        };
+        let h = story_editor_harness("x");
+        let full = field(&h, "x").width();
+        let size = h.state().app.ui.story_editor_size;
+        let width = |s: &str| h.ctx.fonts_mut(|f| f.layout_no_wrap(s.into(), egui::FontId::proportional(size), egui::Color32::WHITE)).size().x;
+        let mut line = String::from("i");
+        while width(&format!("{line}i")) < full - 1.0 {
+            line.push('i');
+        }
+        assert!(full - width(&line) < 4.0, "the row fills the editor: {} of {full}", width(&line));
+        drop(h);
+        let text = format!("{line}\nEnd");
+        let mut h = story_editor_harness(&text);
+        let edge = field(&h, &text).max.x;
+        let before = paragraph_marks(&h);
+        h.state_mut().app.run("view.storyEditorParagraphMarks", json!({})).unwrap();
+        h.run_steps(2);
+        let marks: Vec<_> = paragraph_marks(&h).into_iter().filter(|m| !before.contains(m)).collect();
+        assert_eq!(marks.len(), 1, "{marks:?}");
+        let (rect, clip) = marks[0];
+        assert!(clip.contains_rect(rect), "the mark is not cut off: {rect:?} in {clip:?}");
+        assert!(rect.max.x <= edge, "the mark stays left of the text's right edge {edge}: {rect:?}");
+    }
+
+    /// A mark goes after the last row of a wrapped paragraph and after an empty paragraph, and not
+    /// after the story's last paragraph, which no paragraph break ends.
+    #[test]
+    fn paragraph_marks_go_after_each_paragraph_break() {
+        let ctx = egui::Context::default();
+        let mut galley = None;
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            galley = Some(ui.fonts_mut(|f| f.layout("aa\nbbbb bbbb\n\ncc".into(), egui::FontId::proportional(14.0), egui::Color32::WHITE, 40.0)));
+        });
+        output.textures_delta.clear();
+        let galley = galley.expect("laid out");
+        let spots = super::paragraph_mark_spots(&galley);
+        assert_eq!(spots.len(), 3, "{spots:?}");
+        let rows = &galley.rows;
+        assert!(rows.len() >= 5, "the second paragraph wraps: {} rows", rows.len());
+        assert_eq!(spots[0], egui::pos2(rows[0].rect().max.x + 1.0, rows[0].rect().min.y));
+        assert_eq!(spots[1].y, rows[2].rect().min.y, "after the wrapped row, not the paragraph's first");
+        assert!(spots[1].x > rows[2].rect().min.x + 1.0);
+        assert_eq!(spots[2], egui::pos2(rows[3].rect().min.x + 1.0, rows[3].rect().min.y), "the empty paragraph");
     }
 
     /// Story ids are counted per document: typing in the editor after switching documents edited

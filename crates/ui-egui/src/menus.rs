@@ -254,6 +254,12 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
         None,
         "{} — the Story Editor's vertical ruler of how deep the text reaches in its frames",
     ),
+    (
+        "view.storyEditorParagraphMarks",
+        "Show/Hide Paragraph Break Marks",
+        None,
+        "{} — a ¶ after each paragraph that a paragraph break ends, in the Story Editor",
+    ),
     ("window.hidePanels", "Show/Hide Panels", Some("Tab"), "{} — every panel, the Tools panel included"),
     ("window.hidePanelsExceptTools", "Show/Hide Panels Except Tools", Some("Shift+Tab"), "{}"),
     ("window.nextDocument", "Next Document", Some("Cmd+F6"), "{}"),
@@ -941,6 +947,7 @@ pub const MENUS: &[(&str, &[&str])] = &[
             ">Story Editor",
             "ui:view.storyEditorStyleColumn",
             "ui:view.storyEditorDepthRuler",
+            "ui:view.storyEditorParagraphMarks",
             "<",
         ],
     ),
@@ -1688,6 +1695,7 @@ fn run_ui_inner(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
             Ok(json!({"on": app.ui.story_editor_style_column, "width": app.ui.story_editor_style_width}))
         }
         "view.storyEditorDepthRuler" => flag(&mut app.ui.story_editor_depth_ruler),
+        "view.storyEditorParagraphMarks" => flag(&mut app.ui.story_editor_paragraph_marks),
         "window.hidePanels" | "window.hidePanelsExceptTools" => {
             let mode = if id == "window.hidePanels" { 1 } else { 2 };
             app.ui.hidden_panels = if app.ui.hidden_panels == mode { 0 } else { mode };
@@ -2619,6 +2627,7 @@ pub fn checked(app: &DesignApp, id: &str, params: &Value) -> Option<bool> {
         "view.taggedFrames" => app.ui.tagged_frames,
         "view.storyEditorStyleColumn" => app.ui.story_editor_style_column,
         "view.storyEditorDepthRuler" => app.ui.story_editor_depth_ruler,
+        "view.storyEditorParagraphMarks" => app.ui.story_editor_paragraph_marks,
         "changes.track" => app.session.active().is_some_and(|d| d.doc.settings.track_changes),
         // Pressed, as the Bulleted and Numbered List buttons: every paragraph the command applies
         // to (selected text, cells or text frames) has it.
@@ -3635,6 +3644,7 @@ mod tests {
             "view.tagMarkers",
             "view.storyEditorStyleColumn",
             "view.storyEditorDepthRuler",
+            "view.storyEditorParagraphMarks",
         ] {
             assert!(view.contains(&id), "{id} is in View");
             assert!(!typ.contains(&id), "{id} isn't in Type");
