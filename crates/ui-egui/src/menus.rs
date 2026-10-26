@@ -818,6 +818,8 @@ pub const MENUS: &[(&str, &[&str])] = &[
             "cmd:table.distributeColumns",
             "cmd:table.distributeRows",
             "-",
+            "cmd:table.goToRow",
+            "-",
             "ui:app.tablePanel",
         ],
     ),
@@ -2660,6 +2662,10 @@ fn activate_inner(app: &mut DesignApp, id: &str, params: &Value) {
     }
     if params.is_null() && id == "object.textFrameOptions" {
         app.ui.dialog = Some(crate::dialogs::Dialog::new("textFrameOptions", json!({})));
+        return;
+    }
+    if params.is_null() && id == "table.goToRow" {
+        crate::dialogs::open_go_to_row(app);
         return;
     }
     // New Paragraph/Character Style…: the style options for the new style.
