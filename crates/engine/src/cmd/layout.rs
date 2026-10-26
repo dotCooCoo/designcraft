@@ -1422,7 +1422,8 @@ fn duplicate_layer(s: &mut Session, p: &Value) -> Result<Value> {
             d.stories.insert(new, Arc::new(st));
         }
         // Each story copy gets its frames in the original order, text anchors of its own, which its cross-references
-        // and those of the other copies point at, and tables with ids of their own, allocated in story order.
+        // and those of the other copies point at, and tables with ids of their own, the tables in its cells and notes
+        // included, allocated in story order.
         let mut anchors = HashMap::new();
         let mut order: Vec<(StoryId, StoryId)> = stories.iter().map(|(old, new)| (*old, *new)).collect();
         order.sort_unstable_by_key(|(_, new)| *new);
@@ -1434,16 +1435,7 @@ fn duplicate_layer(s: &mut Session, p: &Value) -> Result<Value> {
                 anchors.insert(a.id, id);
                 Arc::make_mut(a).id = id;
             }
-            let mut tables = HashMap::new();
-            for (t, mut table) in std::mem::take(&mut st.tables) {
-                let n = d.alloc();
-                Arc::make_mut(&mut table).id = n;
-                tables.insert(t, n);
-                st.tables.insert(n, table);
-            }
-            for pf in &mut st.paras {
-                pf.table = pf.table.and_then(|t| tables.get(&t).copied());
-            }
+            renumber_tables(d, &mut st);
             d.stories.insert(*new, Arc::new(st));
         }
         for new in stories.values() {
@@ -1560,6 +1552,28 @@ fn renumber_anchored(
     }
     for n in st.notes.iter_mut().chain(st.endnotes.iter_mut()) {
         renumber_anchored(d, &mut Arc::make_mut(n).text, to, stories, ids, pending);
+    }
+}
+
+/// Give the tables of `st`, and the tables in the stories of its table cells and notes, new ids from `d`, and point the
+/// paragraphs that hold them at the new ids. [`too_deep`] bounds the nesting.
+fn renumber_tables(d: &mut designcraft_doc::Document, st: &mut Story) {
+    let mut tables = HashMap::new();
+    for (t, mut table) in std::mem::take(&mut st.tables) {
+        let n = d.alloc();
+        let table_mut = Arc::make_mut(&mut table);
+        table_mut.id = n;
+        for c in &mut table_mut.cells {
+            renumber_tables(d, &mut c.text);
+        }
+        tables.insert(t, n);
+        st.tables.insert(n, table);
+    }
+    for pf in &mut st.paras {
+        pf.table = pf.table.and_then(|t| tables.get(&t).copied());
+    }
+    for n in st.notes.iter_mut().chain(st.endnotes.iter_mut()) {
+        renumber_tables(d, &mut Arc::make_mut(n).text);
     }
 }
 
@@ -2170,6 +2184,41 @@ mod layer_tests {
         let d = &s.doc().unwrap().doc;
         assert_eq!(d.story(sid).unwrap().tables[&table].nrows(), 1, "the original table is unchanged");
         assert_eq!(d.story(copied).unwrap().tables[&new].nrows(), 2, "a command naming the copy's table changes the copy");
+    }
+
+    #[test]
+    fn duplicate_layer_gives_tables_in_copied_cells_their_own_ids() {
+        let mut s = crate::Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let base = s.doc().unwrap().doc.layers[0].id.0;
+        let text = json!({"rect": [72, 72, 400, 400], "content": "text", "text": "Rows"});
+        let f = s.execute("frame.create", &text).unwrap()["id"].as_u64().unwrap();
+        let sid = s.doc().unwrap().doc.item(designcraft_doc::ItemId(f)).unwrap().text_frame().unwrap().story;
+        s.execute("text.select", &json!({"story": sid.0, "anchor": 4, "focus": 4})).unwrap();
+        let table = s.execute("table.insert", &json!({"rows": 1, "cols": 2})).unwrap()["table"].as_u64().unwrap();
+        let d = std::sync::Arc::make_mut(&mut s.doc_mut().unwrap().doc);
+        let inner = d.alloc();
+        let deepest = d.alloc();
+        let mut nested = designcraft_doc::Table::new(inner, 1, 1, 0, 0, 40.0);
+        nested.cells[0].text.insert_table(0, designcraft_doc::Table::new(deepest, 1, 1, 0, 0, 20.0));
+        d.story_mut(sid).unwrap().table_mut(table).unwrap().cells[0].text.insert_table(0, nested);
+        let copy = s.execute("layer.duplicate", &json!({"id": base})).unwrap()["id"].as_u64().unwrap();
+        let d = &s.doc().unwrap().doc;
+        let copied = on_layer(d, copy)[0].text_frame().unwrap().story;
+        let outer = d.story(copied).unwrap().tables.values().next().unwrap();
+        let cell = &outer.cells[0].text;
+        let new_inner = *cell.tables.keys().next().unwrap();
+        assert_ne!(new_inner, inner, "a table in a copied cell has an id of its own");
+        assert_eq!(cell.tables[&new_inner].id, new_inner);
+        assert_eq!(cell.paras.iter().filter_map(|pf| pf.table).collect::<Vec<_>>(), [new_inner], "the copied cell holds the copied table");
+        let inner_cell = &cell.tables[&new_inner].cells[0].text;
+        let new_deepest = *inner_cell.tables.keys().next().unwrap();
+        assert_ne!(new_deepest, deepest, "a table nested deeper has an id of its own");
+        assert_eq!(inner_cell.paras.iter().filter_map(|pf| pf.table).collect::<Vec<_>>(), [new_deepest]);
+        let ids = [outer.id, new_inner, new_deepest, table, inner, deepest];
+        assert_eq!(ids.iter().collect::<std::collections::HashSet<_>>().len(), ids.len(), "every table id is unique: {ids:?}");
+        let orig = d.story(sid).unwrap().tables[&table].cells[0].text.tables.keys().copied().collect::<Vec<_>>();
+        assert_eq!(orig, [inner], "the original's nested table keeps its id");
     }
 
     #[test]
