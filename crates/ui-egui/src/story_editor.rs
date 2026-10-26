@@ -633,6 +633,34 @@ mod tests {
         assert_eq!((app.ui.story_editor_style_column, app.ui.story_editor_style_width), (true, 400.0));
     }
 
+    /// The Show/Hide Depth Ruler menu label is translated in every interface language.
+    #[test]
+    fn depth_ruler_menu_label_is_translated_in_every_language() {
+        for (lang, _) in crate::i18n::LANGUAGES.iter().filter(|(code, _)| !code.is_empty()) {
+            assert_ne!(crate::i18n::tr(lang, "Show/Hide Depth Ruler"), "Show/Hide Depth Ruler", "{lang}");
+        }
+    }
+
+    /// Showing or hiding the depth ruler keeps the text's focus and caret: typing after the toggle
+    /// still reaches the story.
+    #[test]
+    fn depth_ruler_toggle_keeps_the_text_focused() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), Default::default());
+        app.run("file.new", json!({})).unwrap();
+        let r = app.run("frame.create", json!({"rect": [72, 72, 300, 200], "content": "text", "text": "Ruler story", "caret": false})).unwrap();
+        app.run("app.storyEditor", json!({"story": r["story"].as_u64().unwrap()})).unwrap();
+        let mut h = crate::test_window::open(app, egui::vec2(1440.0, 900.0));
+        h.get_by(|n| n.role() == egui::accesskit::Role::MultilineTextInput && n.value().as_deref() == Some("Ruler story")).focus();
+        h.run_steps(2);
+        for (toggle, typed) in [("!", "Ruler story!"), ("?", "Ruler story!?")] {
+            h.state_mut().app.run("view.storyEditorDepthRuler", json!({})).unwrap();
+            h.run_steps(2);
+            h.event(egui::Event::Text(toggle.into()));
+            h.run_steps(2);
+            assert_eq!(story_text(&h.state().app, 0), typed);
+        }
+    }
+
     /// Story ids are counted per document: typing in the editor after switching documents edited
     /// the other document's story with the same id.
     #[test]
