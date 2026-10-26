@@ -3,7 +3,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use designcraft_doc::{Content, Guide, Item, ItemId, LAYER_COLORS, Layer, LayerId, Margins, SpreadId, SpreadRef, Story, StoryId};
+use designcraft_doc::{
+    Content, Guide, Hyperlink, HyperlinkSource, Item, ItemId, LAYER_COLORS, Layer, LayerId, Margins, SpreadId, SpreadRef, Story, StoryId,
+};
 use serde_json::{Value, json};
 
 use super::{CommandSpec, bad, cmd, has_doc, ok, str_param};
@@ -1374,7 +1376,8 @@ fn set_layer(s: &mut Session, p: &Value) -> Result<Value> {
 /// Duplicate Layer: a new layer above `id` with its settings and a copy of every object on it, on document and parent
 /// spreads, in one undo step. Copied text frames stay threaded to the other copied frames of their story, and each copy
 /// of a story holds all of its text. A copied override of a parent item overrides that item's copy, or is detached when
-/// the parent item is on another layer. Pages hide a parent item's copy where they hide the parent item.
+/// the parent item is on another layer. Pages hide a parent item's copy where they hide the parent item. Hyperlinks on
+/// copied objects and text get copies that go to the same destinations.
 fn duplicate_layer(s: &mut Session, p: &Value) -> Result<Value> {
     const ID: &str = "layer.duplicate";
     let id = LayerId(p.get("id").and_then(Value::as_u64).ok_or_else(|| bad(ID, "missing id"))?);
@@ -1447,6 +1450,22 @@ fn duplicate_layer(s: &mut Session, p: &Value) -> Result<Value> {
             if let Some(st) = d.story_mut(*new) {
                 remap_xrefs(st, &anchors);
             }
+        }
+        // The hyperlinks of copied objects and copied text get copies with ids of their own and the same destinations.
+        let links: Vec<_> = src
+            .hyperlinks
+            .iter()
+            .filter_map(|h| {
+                let source = match &h.source {
+                    HyperlinkSource::Item { id } => HyperlinkSource::Item { id: *ids.get(id)? },
+                    HyperlinkSource::Text { story, start, end } => HyperlinkSource::Text { story: *stories.get(story)?, start: *start, end: *end },
+                };
+                Some((h, source))
+            })
+            .collect();
+        for (h, source) in links {
+            let id = d.alloc();
+            d.hyperlinks.push(Hyperlink { id, source, ..h.clone() });
         }
         // A page, document or parent, hides a parent item's copy where it hides the parent item, and its ruler guides on
         // the layer get copies on the new layer.
@@ -2062,6 +2081,39 @@ mod layer_tests {
         let caption = copies.iter().find_map(|i| i.live_caption.as_ref()).unwrap();
         assert_eq!(caption.source, frame.id, "the caption's copy follows the frame's copy");
         assert_ne!(frame.id.0, a);
+    }
+
+    #[test]
+    fn duplicate_layer_copies_the_hyperlinks_of_its_objects_and_text() {
+        use designcraft_doc::{HyperlinkDest, HyperlinkSource};
+        let mut s = crate::Session::new();
+        s.execute("file.new", &json!({"pages": 2})).unwrap();
+        let base = s.doc().unwrap().doc.layers[0].id.0;
+        let a = s.execute("frame.create", &json!({"rect": [72, 72, 172, 172]})).unwrap()["id"].as_u64().unwrap();
+        s.execute("hyperlink.create", &json!({"ids": [a], "url": "https://example.com/a", "name": "Logo"})).unwrap();
+        let t = s.execute("frame.create", &json!({"rect": [72, 200, 400, 300], "content": "text", "text": "Read more here"})).unwrap();
+        let sid = s.doc().unwrap().doc.item(designcraft_doc::ItemId(t["id"].as_u64().unwrap())).unwrap().text_frame().unwrap().story;
+        s.execute("text.select", &json!({"story": sid.0, "anchor": 5, "focus": 9})).unwrap();
+        s.execute("hyperlink.create", &json!({"page": 2})).unwrap();
+        s.execute("layer.new", &json!({"name": "Art"})).unwrap();
+        let other = s.execute("frame.create", &json!({"rect": [300, 72, 400, 172]})).unwrap()["id"].as_u64().unwrap();
+        s.execute("hyperlink.create", &json!({"ids": [other], "email": "info@example.com"})).unwrap();
+        let before = s.doc().unwrap().doc.hyperlinks.clone();
+        let copy = s.execute("layer.duplicate", &json!({"id": base})).unwrap()["id"].as_u64().unwrap();
+        let d = s.doc().unwrap().doc.clone();
+        assert_eq!(d.hyperlinks[..3], before[..], "the original hyperlinks are unchanged");
+        let copies = on_layer(&d, copy);
+        let frame = copies.iter().find(|i| i.text_frame().is_none()).unwrap().id;
+        let story = copies.iter().find_map(|i| i.text_frame()).unwrap().story;
+        let added = &d.hyperlinks[3..];
+        assert_eq!(added.len(), 2, "the other layer's hyperlink gets no copy");
+        assert_eq!((&added[0].name, &added[0].source, &added[0].dest), (&before[0].name, &HyperlinkSource::Item { id: frame }, &before[0].dest));
+        assert_eq!(added[1].source, HyperlinkSource::Text { story, start: 5, end: 9 });
+        assert_eq!((&added[1].name, &added[1].dest), (&before[1].name, &HyperlinkDest::Page(1)));
+        let ids: std::collections::HashSet<u64> = d.hyperlinks.iter().map(|h| h.id).collect();
+        assert_eq!(ids.len(), 5, "each copy has an id of its own");
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.hyperlinks, before, "one undo step removes the copies");
     }
 
     #[test]
