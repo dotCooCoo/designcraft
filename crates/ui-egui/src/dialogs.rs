@@ -7990,6 +7990,21 @@ mod tests {
     }
 
     #[test]
+    fn cell_options_menu_items_need_a_table_target() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        app.run("frame.create", json!({"rect": [72, 72, 400, 400], "content": "text", "caret": true})).unwrap();
+        let items = ["app.cellOptionsDialog", "app.diagonalLinesDialog", "app.graphicCell"];
+        for id in items {
+            assert!(!crate::menus::menu_enabled(&app, id), "{id} without a table");
+        }
+        app.run("table.insert", json!({"rows": 2, "cols": 2})).unwrap();
+        for id in items {
+            assert!(crate::menus::menu_enabled(&app, id), "{id} in a table");
+        }
+    }
+
+    #[test]
     fn enter_on_a_diagonal_line_button_picks_it_and_leaves_the_dialog_open() {
         let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
         app.run("file.new", json!({})).unwrap();
