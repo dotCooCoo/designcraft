@@ -86,8 +86,8 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                     // With paragraph break marks shown, the text wraps one text size short of the edge, so a
                     // mark after a full row stays within the width the text has without marks.
                     let width = if app.ui.story_editor_paragraph_marks { (ui.available_width() - font.size).max(font.size) } else { f32::INFINITY };
-                    // The text field has a fixed id, so it keeps its focus and caret when the columns before it
-                    // are shown or hidden.
+                    // The text field has a fixed id, so it keeps its focus and caret when the style column or the
+                    // depth ruler before it is shown or hidden.
                     let out = egui::TextEdit::multiline(&mut text)
                         .id(egui::Id::unique("story_editor_text"))
                         .font(font.clone())
@@ -744,6 +744,34 @@ mod tests {
         assert_eq!(spots[1].y, rows[2].rect().min.y, "after the wrapped row, not the paragraph's first");
         assert!(spots[1].x > rows[2].rect().min.x + 1.0);
         assert_eq!(spots[2], egui::pos2(rows[3].rect().min.x + 1.0, rows[3].rect().min.y), "the empty paragraph");
+    }
+
+    /// The Show/Hide Depth Ruler menu label is translated in every interface language.
+    #[test]
+    fn depth_ruler_menu_label_is_translated_in_every_language() {
+        for (lang, _) in crate::i18n::LANGUAGES.iter().filter(|(code, _)| !code.is_empty()) {
+            assert_ne!(crate::i18n::tr(lang, "Show/Hide Depth Ruler"), "Show/Hide Depth Ruler", "{lang}");
+        }
+    }
+
+    /// Showing or hiding the depth ruler keeps the text's focus and caret: typing after the toggle
+    /// still reaches the story.
+    #[test]
+    fn depth_ruler_toggle_keeps_the_text_focused() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), Default::default());
+        app.run("file.new", json!({})).unwrap();
+        let r = app.run("frame.create", json!({"rect": [72, 72, 300, 200], "content": "text", "text": "Ruler story", "caret": false})).unwrap();
+        app.run("app.storyEditor", json!({"story": r["story"].as_u64().unwrap()})).unwrap();
+        let mut h = crate::test_window::open(app, egui::vec2(1440.0, 900.0));
+        h.get_by(|n| n.role() == egui::accesskit::Role::MultilineTextInput && n.value().as_deref() == Some("Ruler story")).focus();
+        h.run_steps(2);
+        for (toggle, typed) in [("!", "Ruler story!"), ("?", "Ruler story!?")] {
+            h.state_mut().app.run("view.storyEditorDepthRuler", json!({})).unwrap();
+            h.run_steps(2);
+            h.event(egui::Event::Text(toggle.into()));
+            h.run_steps(2);
+            assert_eq!(story_text(&h.state().app, 0), typed);
+        }
     }
 
     /// Story ids are counted per document: typing in the editor after switching documents edited
