@@ -82,7 +82,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                     // The text field has a fixed id, so it keeps its focus and caret when the columns before it
                     // are shown or hidden.
                     let out = egui::TextEdit::multiline(&mut text)
-                        .id(egui::Id::new("story_editor_text"))
+                        .id(egui::Id::unique("story_editor_text"))
                         .font(egui::FontId::proportional(app.ui.story_editor_size.clamp(8.0, 36.0)))
                         .desired_width(f32::INFINITY)
                         .desired_rows(20)
@@ -102,14 +102,14 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                         }
                         // The bar between the column and the text: drag it to make the column wider or narrower.
                         let bar = egui::Rect::from_x_y_ranges(bar.x_range(), r.rect.y_range());
-                        let drag = ui.interact(bar, egui::Id::new("story_editor_style_bar"), egui::Sense::drag());
+                        let drag = ui.interact(bar, egui::Id::unique("story_editor_style_bar"), egui::Sense::drag());
                         let line = egui::Rect::from_center_size(bar.center(), vec2(1.0, bar.height()));
                         ui.painter().rect_filled(line, 0.0, if drag.hovered() || drag.dragged() { t.text_dim } else { t.section_divider });
                         let drag = drag.on_hover_cursor(egui::CursorIcon::ResizeHorizontal);
                         if drag.dragged() {
                             dragged_width = Some(style_column_width(column.width() + drag.drag_delta().x));
                         }
-                        drag.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Other, true, "Style name column divider"));
+                        drag.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Unknown, true, "Style name column divider"));
                     }
                     let overset_y = overset.map(|o| {
                         let ci = char_offsets(&story.text, std::iter::once(o));
@@ -638,6 +638,14 @@ mod tests {
     fn depth_ruler_menu_label_is_translated_in_every_language() {
         for (lang, _) in crate::i18n::LANGUAGES.iter().filter(|(code, _)| !code.is_empty()) {
             assert_ne!(crate::i18n::tr(lang, "Show/Hide Depth Ruler"), "Show/Hide Depth Ruler", "{lang}");
+        }
+    }
+
+    /// The Show/Hide Style Name Column menu label is translated in every interface language.
+    #[test]
+    fn style_name_column_menu_label_is_translated_in_every_language() {
+        for (lang, _) in crate::i18n::LANGUAGES.iter().filter(|(code, _)| !code.is_empty()) {
+            assert_ne!(crate::i18n::tr(lang, "Show/Hide Style Name Column"), "Show/Hide Style Name Column", "{lang}");
         }
     }
 
