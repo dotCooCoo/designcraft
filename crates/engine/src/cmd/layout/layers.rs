@@ -109,6 +109,9 @@ pub(super) fn duplicate_layer(s: &mut Session, p: &Value) -> Result<Value> {
         order.sort_unstable_by_key(|(_, new)| *new);
         for (old, new) in &order {
             let Some(mut st) = d.story(*new).cloned() else { continue };
+            if let Some((parent, revision)) = st.link {
+                st.link = Some((stories.get(&parent).copied().unwrap_or(parent), revision));
+            }
             st.frames = src.story(*old).map(|o| o.frames.iter().filter_map(|f| ids.get(f).copied()).collect()).unwrap_or_default();
             for (k, a) in (1..).zip(st.anchors.iter_mut()) {
                 let id = (new.0 << 24) + k;
@@ -420,6 +423,41 @@ mod layer_tests {
         let d = &s.doc().unwrap().doc;
         assert_eq!(d.layers, before.layers);
         assert_eq!(d.all_items(), before.all_items());
+    }
+
+    #[test]
+    fn duplicate_layer_keeps_linked_story_parents_with_their_copies() {
+        for copy_parent in [true, false] {
+            let mut s = crate::Session::new();
+            s.execute("file.new", &json!({})).unwrap();
+            let parent = s.execute("frame.create", &json!({"rect": [0, 0, 100, 100], "content": "text", "text": "Original"})).unwrap();
+            let layer = if copy_parent {
+                s.doc().unwrap().active_layer.0
+            } else {
+                s.execute("layer.new", &json!({"name": "Linked"})).unwrap()["id"].as_u64().unwrap()
+            };
+            let child = s.execute("story.placeAndLink", &json!({"story": parent["story"], "rect": [100, 0, 200, 100]})).unwrap();
+            let copy = s.execute("layer.duplicate", &json!({"id": layer})).unwrap()["id"].as_u64().unwrap();
+            let d = &s.doc().unwrap().doc;
+            let copies = on_layer(d, copy);
+            let copied_stories: Vec<_> = copies.iter().map(|item| d.story(item.text_frame().unwrap().story).unwrap()).collect();
+            let copied_child = copied_stories.iter().find(|story| story.link.is_some()).unwrap().id;
+            let expected_parent = if copy_parent {
+                copied_stories.iter().find(|story| story.link.is_none()).unwrap().id
+            } else {
+                designcraft_doc::StoryId(parent["story"].as_u64().unwrap())
+            };
+            assert_eq!(d.story(copied_child).unwrap().link.unwrap().0, expected_parent);
+            s.execute("story.setText", &json!({"story": expected_parent.0, "text": "Edited source"})).unwrap();
+            s.execute("story.updateLink", &json!({"story": copied_child.0})).unwrap();
+            assert_eq!(s.doc().unwrap().doc.story(copied_child).unwrap().text, "Edited source");
+            assert_eq!(s.doc().unwrap().doc.story(designcraft_doc::StoryId(child["story"].as_u64().unwrap())).unwrap().text, "Original");
+            if copy_parent {
+                s.execute("story.setText", &json!({"story": parent["story"], "text": "Edited original"})).unwrap();
+                s.execute("story.updateLink", &json!({"story": copied_child.0})).unwrap();
+                assert_eq!(s.doc().unwrap().doc.story(copied_child).unwrap().text, "Edited source");
+            }
+        }
     }
 
     #[test]
