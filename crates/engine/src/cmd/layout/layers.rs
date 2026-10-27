@@ -119,6 +119,7 @@ pub(super) fn duplicate_layer(s: &mut Session, p: &Value) -> Result<Value> {
                 Arc::make_mut(a).id = id;
             }
             renumber_tables(d, &mut st);
+            renumber_nested_anchors(d, &mut st, &mut anchors);
             d.stories.insert(*new, Arc::new(st));
         }
         for new in stories.values() {
@@ -257,6 +258,25 @@ fn renumber_tables(d: &mut designcraft_doc::Document, st: &mut Story) {
     }
     for n in st.notes.iter_mut().chain(st.endnotes.iter_mut()) {
         renumber_tables(d, &mut Arc::make_mut(n).text);
+    }
+}
+
+fn renumber_nested_anchors(d: &mut designcraft_doc::Document, st: &mut Story, anchors: &mut HashMap<u64, u64>) {
+    fn child(d: &mut designcraft_doc::Document, st: &mut Story, anchors: &mut HashMap<u64, u64>) {
+        for anchor in &mut st.anchors {
+            let id = d.alloc();
+            anchors.insert(anchor.id, id);
+            Arc::make_mut(anchor).id = id;
+        }
+        renumber_nested_anchors(d, st, anchors);
+    }
+    for table in st.tables.values_mut() {
+        for cell in &mut Arc::make_mut(table).cells {
+            child(d, &mut cell.text, anchors);
+        }
+    }
+    for note in st.notes.iter_mut().chain(st.endnotes.iter_mut()) {
+        child(d, &mut Arc::make_mut(note).text, anchors);
     }
 }
 
@@ -707,6 +727,74 @@ mod layer_tests {
         assert_eq!(st.anchors[0].name, orig.anchors[0].name);
         assert_eq!(st.xrefs[0].target, st.anchors[0].id, "the copied cross-reference points at the copied paragraph");
         assert_eq!(d.find_anchor(st.anchors[0].id).map(|a| a.0), Some(copied));
+    }
+
+    #[test]
+    fn duplicate_layer_remaps_anchors_in_cells_and_notes() {
+        use designcraft_doc::Story;
+        use std::sync::Arc;
+
+        fn add_anchor(st: &mut Story, id: u64) {
+            st.insert_anchor(0, "Nested heading");
+            Arc::make_mut(&mut st.anchors[0]).id = id;
+            st.insert_xref(st.len(), designcraft_doc::CrossRef { target: id, format: String::new() });
+        }
+        fn collect(st: &Story, values: &mut Vec<(u64, u64)>) {
+            for (a, x) in st.anchors.iter().zip(st.xrefs.iter()) {
+                values.push((a.id, x.target));
+            }
+            for table in st.tables.values() {
+                for cell in &table.cells {
+                    collect(&cell.text, values);
+                }
+            }
+            for note in st.notes.iter().chain(st.endnotes.iter()) {
+                collect(&note.text, values);
+            }
+        }
+        let mut s = crate::Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let base = s.doc().unwrap().doc.layers[0].id.0;
+        let f = s.execute("frame.create", &json!({"rect": [72, 72, 400, 400], "content": "text", "text": "Rows"})).unwrap()["id"].as_u64().unwrap();
+        let sid = s.doc().unwrap().doc.item(designcraft_doc::ItemId(f)).unwrap().text_frame().unwrap().story;
+        let d = Arc::make_mut(&mut s.doc_mut().unwrap().doc);
+        let table_id = d.alloc();
+        let nested_id = d.alloc();
+        let anchor_ids = [d.alloc(), d.alloc(), d.alloc(), d.alloc()];
+        let mut table = designcraft_doc::Table::new(table_id, 1, 1, 0, 0, 40.0);
+        let cell = &mut table.cells[0].text;
+        add_anchor(cell, anchor_ids[0]);
+        let mut nested = designcraft_doc::Table::new(nested_id, 1, 1, 0, 0, 20.0);
+        add_anchor(&mut nested.cells[0].text, anchor_ids[1]);
+        cell.insert_table(cell.len(), nested);
+        cell.insert_note(cell.len(), "Footnote", Default::default()).unwrap();
+        add_anchor(&mut Arc::make_mut(&mut cell.notes[0]).text, anchor_ids[2]);
+        cell.insert_endnote(cell.len(), "Endnote", Default::default()).unwrap();
+        add_anchor(&mut Arc::make_mut(&mut cell.endnotes[0]).text, anchor_ids[3]);
+        d.story_mut(sid).unwrap().insert_table(0, table);
+        let mut original = Vec::new();
+        collect(d.story(sid).unwrap(), &mut original);
+        assert_eq!(original.len(), 4);
+        let copy = s.execute("layer.duplicate", &json!({"id": base})).unwrap()["id"].as_u64().unwrap();
+        let d = &s.doc().unwrap().doc;
+        let copied = on_layer(d, copy)[0].text_frame().unwrap().story;
+        let mut after = Vec::new();
+        collect(d.story(copied).unwrap(), &mut after);
+        assert_eq!(after.len(), original.len());
+        let unique: std::collections::HashSet<_> = after.iter().map(|(id, _)| *id).collect();
+        assert_eq!(unique.len(), after.len());
+        for (id, target) in &after {
+            assert!(!anchor_ids.contains(id), "copied nested anchor retains original id {id}");
+            assert_eq!(id, target, "copied reference points to its copied anchor");
+        }
+        let mut unchanged = Vec::new();
+        collect(d.story(sid).unwrap(), &mut unchanged);
+        assert_eq!(unchanged, original);
+        s.execute("edit.undo", &json!({})).unwrap();
+        s.execute("edit.redo", &json!({})).unwrap();
+        let mut redone = Vec::new();
+        collect(s.doc().unwrap().doc.story(copied).unwrap(), &mut redone);
+        assert_eq!(redone, after);
     }
 
     #[test]
