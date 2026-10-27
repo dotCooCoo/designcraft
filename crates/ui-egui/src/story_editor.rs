@@ -745,7 +745,6 @@ mod tests {
         assert!(spots[1].x > rows[2].rect().min.x + 1.0);
         assert_eq!(spots[2], egui::pos2(rows[3].rect().min.x + 1.0, rows[3].rect().min.y), "the empty paragraph");
     }
-
     /// The Show/Hide Depth Ruler menu label is translated in every interface language.
     #[test]
     fn depth_ruler_menu_label_is_translated_in_every_language() {
@@ -754,6 +753,13 @@ mod tests {
         }
     }
 
+    /// The Show/Hide Style Name Column menu label is translated in every interface language.
+    #[test]
+    fn style_name_column_menu_label_is_translated_in_every_language() {
+        for (lang, _) in crate::i18n::LANGUAGES.iter().filter(|(code, _)| !code.is_empty()) {
+            assert_ne!(crate::i18n::tr(lang, "Show/Hide Style Name Column"), "Show/Hide Style Name Column", "{lang}");
+        }
+    }
     /// Showing or hiding the depth ruler keeps the text's focus and caret: typing after the toggle
     /// still reaches the story.
     #[test]
