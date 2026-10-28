@@ -2350,7 +2350,7 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
         [
             "Show/Hide Paragraph Break Marks",
             "Afficher/Masquer les marques de fin de paragraphe",
-            "Show/Hide Paragraph Break Marks",
+            "Mostrar/ocultar marcas de fin de párrafo",
             "Show/Hide Paragraph Break Marks",
             "显示/隐藏段落结束标记",
         ],
