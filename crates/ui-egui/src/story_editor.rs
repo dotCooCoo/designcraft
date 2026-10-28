@@ -66,7 +66,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
     let mut dragged_width: Option<f32> = None;
     let words = story.text.split_whitespace().count().to_string();
     egui::Window::new(crate::i18n::tr(&app.ui.language, "Story Editor — {count} words").replace("{count}", &words))
-        .id(egui::Id::new("story_editor"))
+        .id(egui::Id::unique("story_editor"))
         .open(&mut open)
         .default_size(vec2(560.0, 520.0))
         .show(ctx, |ui| {
@@ -89,44 +89,46 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                     // The text field has a fixed id, so it keeps its focus and caret when the columns before it
                     // are shown or hidden.
                     let out = egui::TextEdit::multiline(&mut text)
-                        .id(egui::Id::new("story_editor_text"))
+                        .id(egui::Id::unique("story_editor_text"))
                         .font(font.clone())
                         .desired_width(width)
                         .desired_rows(20)
                         .frame(egui::Frame::NONE)
                         .show(ui);
                     let r = out.response;
+                    let changed = r.changed();
                     if let Some((column, bar)) = column {
                         let starts = paragraph_start_offsets(out.galley.rows.iter().map(|row| (row.pos.y, row.ends_with_newline)));
                         for (i, y) in starts.into_iter().enumerate() {
                             let Some(para) = story.paras.get(i) else { break };
                             let rect = egui::Rect::from_min_size(egui::pos2(column.min.x, out.galley_pos.y + y), vec2(column.width(), 14.0));
                             ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
+                                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
                                 let name = crate::i18n::style_name(&app.ui.language, &para.style);
                                 crate::rtl::label(ui, egui::RichText::new(name).size(11.0).color(t.text_dim));
                             });
                         }
                         // The bar between the column and the text: drag it to make the column wider or narrower.
                         let bar = egui::Rect::from_x_y_ranges(bar.x_range(), r.rect.y_range());
-                        let drag = ui.interact(bar, egui::Id::new("story_editor_style_bar"), egui::Sense::drag());
+                        let drag = ui.interact(bar, egui::Id::unique("story_editor_style_bar"), egui::Sense::drag());
                         let line = egui::Rect::from_center_size(bar.center(), vec2(1.0, bar.height()));
                         ui.painter().rect_filled(line, 0.0, if drag.hovered() || drag.dragged() { t.text_dim } else { t.section_divider });
                         let drag = drag.on_hover_cursor(egui::CursorIcon::ResizeHorizontal);
                         if drag.dragged() {
                             dragged_width = Some(style_column_width(column.width() + drag.drag_delta().x));
                         }
-                        drag.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Other, true, "Style name column divider"));
+                        drag.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Unknown, true, "Style name column divider"));
                     }
                     if app.ui.story_editor_paragraph_marks {
                         for spot in paragraph_mark_spots(&out.galley) {
                             ui.painter().text(out.galley_pos + spot.to_vec2(), egui::Align2::LEFT_TOP, PARAGRAPH_MARK, font.clone(), t.text_dim);
                         }
                     }
-                    let overset_y = overset.map(|o| {
+                    let overset_y = overset.filter(|_| !changed).map(|o| {
                         let ci = char_offsets(&story.text, std::iter::once(o));
                         out.galley_pos.y + start_rows(&out.galley, &ci).first().map_or(0.0, |row| row.0)
                     });
-                    if let (Some(ruler), Some(depths)) = (ruler, &depths) {
+                    if let (Some(ruler), Some(depths)) = (ruler, depths.as_ref().filter(|_| !changed)) {
                         let bottom = overset_y.unwrap_or(out.galley_pos.y + out.galley.size().y);
                         let bar = egui::Rect::from_min_max(pos2(ruler.min.x, out.galley_pos.y), pos2(ruler.min.x + RULER_WIDTH, bottom));
                         ui.painter().rect_filled(bar, 0.0, t.ruler);
@@ -149,7 +151,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                         let x0 = ruler.map_or(r.rect.min.x, |rr| rr.min.x);
                         ui.painter().line_segment([pos2(x0, y), pos2(r.rect.max.x, y)], egui::Stroke::new(1.5, OVERSET_RED));
                     }
-                    if r.changed() {
+                    if changed {
                         // Minimal diff: common prefix and suffix.
                         let old = &story.text;
                         let pre = old.bytes().zip(text.bytes()).take_while(|(a, b)| a == b).count();
@@ -563,6 +565,22 @@ mod tests {
         assert!(!crate::UiState::from_preferences_json(&saved).unwrap().story_editor_style_column);
     }
 
+    /// A style name wider than the column is cut short at the column's edge, so it does not run
+    /// into the story text.
+    #[test]
+    fn a_long_style_name_stays_in_the_column() {
+        let mut h = story_editor_harness("Narrow story");
+        h.state_mut().app.run("view.storyEditorStyleColumn", json!({"width": 40})).unwrap();
+        h.run_steps(2);
+        let app = &h.state().app;
+        let para_style = &app.session.active().unwrap().doc.stories.values().next().unwrap().paras[0].style;
+        let style = crate::i18n::style_name(&app.ui.language, para_style).to_string();
+        let name = h.get_by_label(&style).rect();
+        let text = text_left(&h, "Narrow story");
+        assert!(name.width() <= 40.5, "the name {style:?} is cut to the column: {name:?}");
+        assert!(name.max.x <= text, "the name ends before the text: {name:?}, text at {text}");
+    }
+
     /// Dragging the bar between the style names and the text resizes the column; the text moves
     /// with the bar, and the width is remembered for the next time the editor opens.
     #[test]
@@ -625,6 +643,8 @@ mod tests {
         let mut app = DesignApp::new(designcraft_engine::Session::new(), Default::default());
         assert_eq!(app.run("view.storyEditorStyleColumn", json!({"width": 250})).unwrap(), json!({"on": true, "width": 250.0}));
         assert_eq!(app.run("view.storyEditorStyleColumn", json!({"width": 1000})).unwrap()["width"], json!(400.0));
+        assert_eq!(app.run("view.storyEditorStyleColumn", json!({"width": -1e40})).unwrap()["width"], json!(40.0));
+        assert_eq!(app.run("view.storyEditorStyleColumn", json!({"width": 1e40})).unwrap()["width"], json!(400.0));
         assert_eq!(app.run("view.storyEditorStyleColumn", json!({"on": false})).unwrap(), json!({"on": false, "width": 400.0}));
         assert_eq!(app.run("view.storyEditorStyleColumn", json!({})).unwrap()["on"], json!(true));
         assert!(app.run("view.storyEditorStyleColumn", json!({"width": "wide"})).is_err());
@@ -725,6 +745,80 @@ mod tests {
         assert_eq!(spots[1].y, rows[2].rect().min.y, "after the wrapped row, not the paragraph's first");
         assert!(spots[1].x > rows[2].rect().min.x + 1.0);
         assert_eq!(spots[2], egui::pos2(rows[3].rect().min.x + 1.0, rows[3].rect().min.y), "the empty paragraph");
+    }
+
+    #[test]
+    fn depth_marks_wait_for_composition_after_editing() {
+        fn marks(shape: &egui::epaint::Shape, tick: egui::Color32) -> usize {
+            match shape {
+                egui::epaint::Shape::Vec(shapes) => shapes.iter().map(|s| marks(s, tick)).sum(),
+                egui::epaint::Shape::LineSegment { points, stroke }
+                    if stroke.color == super::OVERSET_RED || (stroke.color == tick && (points[1].x - points[0].x - 8.0).abs() < 0.01) =>
+                {
+                    1
+                }
+                _ => 0,
+            }
+        }
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), Default::default());
+        app.run("file.new", json!({})).unwrap();
+        let text = "First line\nSecond line\nThird line\n".repeat(4);
+        let r = app.run("frame.create", json!({"rect": [72, 72, 372, 172], "content": "text", "text": text, "caret": false})).unwrap();
+        app.run("app.storyEditor", json!({"story": r["story"].as_u64().unwrap()})).unwrap();
+        let mut h = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(900.0, 700.0))
+            .with_accessibility_check(false)
+            .build_ui_state(|ui, app| super::show(app, ui.ctx()), app);
+        h.run_steps(3);
+        let tick = crate::theme::Tokens::get(&h.ctx).ruler_tick;
+        let count = |h: &egui_kittest::Harness<'_, DesignApp>| h.output().shapes.iter().map(|s| marks(&s.shape, tick)).sum::<usize>();
+        assert!(count(&h) >= 2, "the fixture paints ruler ticks and an overset line");
+        h.get_by(|n| n.role() == egui::accesskit::Role::MultilineTextInput).focus();
+        h.run_steps(2);
+        h.key_press_modifiers(egui::Modifiers::CTRL, egui::Key::Home);
+        h.run_steps(2);
+        h.event(egui::Event::Text("Inserted line\n".into()));
+        h.step();
+        assert_eq!(story_text(h.state(), 0), format!("Inserted line\n{text}"));
+        assert_eq!(count(&h), 0, "the edit frame must not map old composition offsets to new text");
+        h.step();
+        assert!(count(&h) >= 2, "the next frame paints the updated composition");
+    }
+
+    /// The Show/Hide Depth Ruler menu label is translated in every interface language.
+    #[test]
+    fn depth_ruler_menu_label_is_translated_in_every_language() {
+        for (lang, _) in crate::i18n::LANGUAGES.iter().filter(|(code, _)| !code.is_empty()) {
+            assert_ne!(crate::i18n::tr(lang, "Show/Hide Depth Ruler"), "Show/Hide Depth Ruler", "{lang}");
+        }
+    }
+
+    /// The Show/Hide Style Name Column menu label is translated in every interface language.
+    #[test]
+    fn style_name_column_menu_label_is_translated_in_every_language() {
+        for (lang, _) in crate::i18n::LANGUAGES.iter().filter(|(code, _)| !code.is_empty()) {
+            assert_ne!(crate::i18n::tr(lang, "Show/Hide Style Name Column"), "Show/Hide Style Name Column", "{lang}");
+        }
+    }
+
+    /// Showing or hiding the depth ruler keeps the text's focus and caret: typing after the toggle
+    /// still reaches the story.
+    #[test]
+    fn depth_ruler_toggle_keeps_the_text_focused() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), Default::default());
+        app.run("file.new", json!({})).unwrap();
+        let r = app.run("frame.create", json!({"rect": [72, 72, 300, 200], "content": "text", "text": "Ruler story", "caret": false})).unwrap();
+        app.run("app.storyEditor", json!({"story": r["story"].as_u64().unwrap()})).unwrap();
+        let mut h = crate::test_window::open(app, egui::vec2(1440.0, 900.0));
+        h.get_by(|n| n.role() == egui::accesskit::Role::MultilineTextInput && n.value().as_deref() == Some("Ruler story")).focus();
+        h.run_steps(2);
+        for (toggle, typed) in [("!", "Ruler story!"), ("?", "Ruler story!?")] {
+            h.state_mut().app.run("view.storyEditorDepthRuler", json!({})).unwrap();
+            h.run_steps(2);
+            h.event(egui::Event::Text(toggle.into()));
+            h.run_steps(2);
+            assert_eq!(story_text(&h.state().app, 0), typed);
+        }
     }
 
     /// Story ids are counted per document: typing in the editor after switching documents edited
