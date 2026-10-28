@@ -1,4 +1,9 @@
-use super::{LAYER_COLORS, LayerId, Result, Session, Value, bad, ok};
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
+
+use designcraft_doc::{Content, Guide, Hyperlink, HyperlinkSource, Item, ItemId, SpreadRef, Story, StoryId};
+
+use super::{LAYER_COLORS, Layer, LayerId, Result, Session, Value, bad, json, ok};
 
 /// Layer Options: every field in one undo step; a bad name or colour changes nothing.
 pub(super) fn set_layer(s: &mut Session, p: &Value) -> Result<Value> {
@@ -105,6 +110,10 @@ pub(super) fn duplicate_layer(s: &mut Session, p: &Value) -> Result<Value> {
         // and those of the other copies point at, and tables with ids of their own, the tables in its cells and notes
         // included, allocated in story order.
         let mut anchors = HashMap::new();
+        let mut used = HashSet::new();
+        for st in d.stories.values() {
+            anchor_ids(st, &mut used);
+        }
         let mut order: Vec<(StoryId, StoryId)> = stories.iter().map(|(old, new)| (*old, *new)).collect();
         order.sort_unstable_by_key(|(_, new)| *new);
         for (old, new) in &order {
@@ -116,10 +125,11 @@ pub(super) fn duplicate_layer(s: &mut Session, p: &Value) -> Result<Value> {
             for (k, a) in (1..).zip(st.anchors.iter_mut()) {
                 let id = (new.0 << 24) + k;
                 anchors.insert(a.id, id);
+                used.insert(id);
                 Arc::make_mut(a).id = id;
             }
             renumber_tables(d, &mut st);
-            renumber_nested_anchors(d, &mut st, &mut anchors);
+            renumber_nested_anchors(d, &mut st, &mut anchors, &mut used);
             d.stories.insert(*new, Arc::new(st));
         }
         for new in stories.values() {
@@ -261,22 +271,40 @@ fn renumber_tables(d: &mut designcraft_doc::Document, st: &mut Story) {
     }
 }
 
-fn renumber_nested_anchors(d: &mut designcraft_doc::Document, st: &mut Story, anchors: &mut HashMap<u64, u64>) {
-    fn child(d: &mut designcraft_doc::Document, st: &mut Story, anchors: &mut HashMap<u64, u64>) {
+/// Add the ids of the text anchors in `st`, and in the stories of its table cells and notes at any depth, to `used`.
+/// The walk keeps its own stack, so a story on another layer that nests deeper than [`too_deep`] allows is read too.
+fn anchor_ids(st: &Story, used: &mut HashSet<u64>) {
+    let mut stack = vec![st];
+    while let Some(st) = stack.pop() {
+        used.extend(st.anchors.iter().map(|a| a.id));
+        stack.extend(st.tables.values().flat_map(|t| t.cells.iter().map(|c| &c.text)));
+        stack.extend(st.notes.iter().chain(st.endnotes.iter()).map(|n| &n.text));
+    }
+}
+
+/// Give the text anchors in the stories of the table cells and notes of `st` new ids from `d` that are not in `used`
+/// (recorded in `anchors` and `used`). [`too_deep`] bounds the nesting.
+fn renumber_nested_anchors(d: &mut designcraft_doc::Document, st: &mut Story, anchors: &mut HashMap<u64, u64>, used: &mut HashSet<u64>) {
+    fn child(d: &mut designcraft_doc::Document, st: &mut Story, anchors: &mut HashMap<u64, u64>, used: &mut HashSet<u64>) {
         for anchor in &mut st.anchors {
-            let id = d.alloc();
+            let id = loop {
+                let id = d.alloc();
+                if used.insert(id) {
+                    break id;
+                }
+            };
             anchors.insert(anchor.id, id);
             Arc::make_mut(anchor).id = id;
         }
-        renumber_nested_anchors(d, st, anchors);
+        renumber_nested_anchors(d, st, anchors, used);
     }
     for table in st.tables.values_mut() {
         for cell in &mut Arc::make_mut(table).cells {
-            child(d, &mut cell.text, anchors);
+            child(d, &mut cell.text, anchors, used);
         }
     }
     for note in st.notes.iter_mut().chain(st.endnotes.iter_mut()) {
-        child(d, &mut Arc::make_mut(note).text, anchors);
+        child(d, &mut Arc::make_mut(note).text, anchors, used);
     }
 }
 
@@ -795,6 +823,48 @@ mod layer_tests {
         let mut redone = Vec::new();
         collect(s.doc().unwrap().doc.story(copied).unwrap(), &mut redone);
         assert_eq!(redone, after);
+    }
+
+    #[test]
+    fn duplicate_layer_gives_copied_cell_anchors_ids_no_other_anchor_has() {
+        use std::sync::Arc;
+
+        fn ids(st: &designcraft_doc::Story, out: &mut Vec<u64>) {
+            out.extend(st.anchors.iter().map(|a| a.id));
+            for table in st.tables.values() {
+                for cell in &table.cells {
+                    ids(&cell.text, out);
+                }
+            }
+        }
+        let mut s = crate::Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let base = s.doc().unwrap().doc.layers[0].id.0;
+        let f = s.execute("frame.create", &json!({"rect": [72, 72, 400, 400], "content": "text", "text": "Rows"})).unwrap()["id"].as_u64().unwrap();
+        let sid = s.doc().unwrap().doc.item(designcraft_doc::ItemId(f)).unwrap().text_frame().unwrap().story;
+        let d = Arc::make_mut(&mut s.doc_mut().unwrap().doc);
+        let table_id = d.alloc();
+        // The cell's anchors take the ids the document hands out next, as anchors made in a cell story can.
+        let start = d.alloc();
+        let mut table = designcraft_doc::Table::new(table_id, 1, 1, 0, 0, 40.0);
+        let cell = &mut table.cells[0].text;
+        for k in 1..=64 {
+            cell.insert_anchor(0, "Heading");
+            Arc::make_mut(&mut cell.anchors[0]).id = start + k;
+        }
+        d.story_mut(sid).unwrap().insert_table(0, table);
+        let mut original = Vec::new();
+        ids(d.story(sid).unwrap(), &mut original);
+        assert_eq!(original.len(), 64);
+        let copy = s.execute("layer.duplicate", &json!({"id": base})).unwrap()["id"].as_u64().unwrap();
+        let d = &s.doc().unwrap().doc;
+        let copied = on_layer(d, copy)[0].text_frame().unwrap().story;
+        let mut after = Vec::new();
+        ids(d.story(copied).unwrap(), &mut after);
+        assert_eq!(after.len(), original.len());
+        for id in &after {
+            assert!(!original.contains(id), "copied cell anchor {id} has the id of an original anchor");
+        }
     }
 
     #[test]
