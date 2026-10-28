@@ -1,11 +1,6 @@
 //! Layout menu and Pages/Layers panels: pages, spreads, parents, margins & columns, layers.
 
-use std::collections::HashMap;
-use std::sync::Arc;
-
-use designcraft_doc::{
-    Content, Guide, Hyperlink, HyperlinkSource, Item, ItemId, LAYER_COLORS, Layer, LayerId, Margins, SpreadId, SpreadRef, Story, StoryId,
-};
+use designcraft_doc::{LAYER_COLORS, Layer, LayerId, Margins, SpreadId};
 use serde_json::{Value, json};
 
 use super::{CommandSpec, bad, cmd, has_doc, ok, str_param};
