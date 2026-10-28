@@ -401,7 +401,7 @@ pub fn color_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
         }
         ui.label(egui::RichText::new(&name).size(11.0).color(t.text_dim));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let combo = egui::ComboBox::from_id_salt("color_mode")
+            let combo = craft_ui::ComboBox::from_id_salt("color_mode")
                 .width(64.0)
                 .selected_text(match mode {
                     ColorMode::Cmyk => "CMYK",
@@ -618,11 +618,17 @@ fn color_json(c: &designcraft_color::Color) -> serde_json::Value {
     }
 }
 
-/// Stops in `object.gradient` form.
+/// Stops in `object.gradient` form: a stop on a swatch also names it, so it keeps its inks.
 fn stops_json(g: &designcraft_color::Gradient) -> Vec<serde_json::Value> {
     g.stops
         .iter()
-        .map(|s| json!({"location": s.offset as f64 * 100.0, "color": color_json(&s.color), "opacity": s.opacity as f64 * 100.0, "midpoint": s.midpoint as f64 * 100.0}))
+        .map(|s| {
+            let mut v = json!({"location": s.offset as f64 * 100.0, "color": color_json(&s.color), "opacity": s.opacity as f64 * 100.0, "midpoint": s.midpoint as f64 * 100.0});
+            if let (Some(o), Some(w)) = (v.as_object_mut(), &s.swatch) {
+                o.insert("swatch".to_string(), json!(w));
+            }
+            v
+        })
         .collect()
 }
 
@@ -735,7 +741,7 @@ pub fn gradient_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
                     crate::widgets::caption_w(ui, crate::i18n::tr(&lang, "Type:"), 52.0);
                     let shown = if is_gradient { crate::i18n::tr(&lang, g.kind.label()) } else { "" };
                     let combo =
-                        egui::ComboBox::from_id_salt("grad_type").selected_text(crate::rtl::widget(ui, shown)).width(104.0).show_ui(ui, |ui| {
+                        craft_ui::ComboBox::from_id_salt("grad_type").selected_text(crate::rtl::widget(ui, shown)).width(104.0).show_ui(ui, |ui| {
                             for (k, v) in [("Linear", "linear"), ("Radial", "radial")] {
                                 if ui
                                     .selectable_label(is_gradient && g.kind.label() == k, crate::rtl::widget(ui, crate::i18n::tr(&lang, k)))
@@ -894,6 +900,10 @@ pub fn gradient_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
                     let mut rgb = [(r * 255.0) as u8, (gg * 255.0) as u8, (bb * 255.0) as u8];
                     if egui::color_picker::color_edit_button_srgb(ui, &mut rgb).changed() {
                         let mut stops = stops_json(&g);
+                        // A picked color replaces the stop's swatch.
+                        if let Some(o) = stops.get_mut(i).and_then(serde_json::Value::as_object_mut) {
+                            o.remove("swatch");
+                        }
                         set_stop(&mut stops, i, "color", json!(format!("#{:02x}{:02x}{:02x}", rgb[0], rgb[1], rgb[2])));
                         send = Some(json!({"stops": stops}));
                     }
@@ -1027,6 +1037,8 @@ mod gradient_panel_tests {
         assert_eq!(g.stops[1].color, Color::gray(0.6));
         assert!((g.stops[1].offset - 0.8).abs() < 1e-6);
         assert_eq!(g.stops[2].color, Color::gray(0.01), "a 1 % grey stays 1 %");
+        assert_eq!(g.stops[0].swatch.as_deref(), Some("C=0 M=100 Y=0 K=0"), "a stop keeps its swatch");
+        assert_eq!(g.stops[1].swatch, None);
     }
 
     #[test]
