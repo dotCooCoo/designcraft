@@ -1,5 +1,8 @@
 use super::target::{edit_table, target};
-use super::{CellRange, CellStroke, Document, Result, Session, StrokeType, Table, Value, VerticalJustification, bad, compose, json, ok, str_param};
+use super::{
+    CellRange, CellStroke, DiagonalLines, Document, Result, Session, StrokeType, Table, Value, VerticalJustification, bad, compose, json, ok,
+    str_param,
+};
 
 /// Cell edges chosen for a stroke edit: the target range's four outer sides (physical left and
 /// right) and the lines between its rows and columns.
