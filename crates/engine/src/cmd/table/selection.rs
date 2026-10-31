@@ -24,11 +24,13 @@ pub(super) fn select(s: &mut Session, p: &Value) -> Result<Value> {
         _ => {}
     }
     let st = s.doc_mut()?;
+    // The caret goes in the cell that covers the range's first position, a merged one included.
+    let (row, col) = st.doc.story(g.story).and_then(|x| x.tables.get(&g.table)).map_or((r.r0, r.c0), |t| t.owner(r.r0, r.c0));
     // The caret's frame is kept only within the same story.
     let frame = st.selection.text.filter(|t| t.story == g.story).and_then(|t| t.frame);
     st.selection = Selection {
         cells: Some(TableSel { story: g.story, table: g.table, range: r }),
-        text: Some(TextSel { story: g.story, anchor: 0, focus: 0, frame, cell: Some(CellAddr { table: g.table, row: r.r0, col: r.c0 }) }),
+        text: Some(TextSel { story: g.story, anchor: 0, focus: 0, frame, cell: Some(CellAddr { table: g.table, row, col }) }),
         ..Default::default()
     };
     st.bump_revision();
@@ -303,6 +305,16 @@ mod go_to_row_tests {
         assert_eq!(frame, b["id"].as_u64(), "the caret is in the frame that shows the row");
         // The header row repeats on page 2; the row itself is the one on page 1.
         assert_eq!(s.execute("table.goToRow", &json!({"row": 1, "section": "header"})).unwrap()["page"], 1);
+    }
+
+    #[test]
+    fn go_to_row_puts_the_caret_in_a_merged_cell_that_covers_the_row() {
+        let mut s = session();
+        // Body rows 1 and 2 (table rows 1 and 2) share one merged cell in column 0.
+        s.execute("table.merge", &json!({"rows": [1, 2], "col": 0})).unwrap();
+        s.execute("table.goToRow", &json!({"row": 2})).unwrap();
+        assert_eq!(selected(&s), CellRange { r0: 2, c0: 0, r1: 2, c1: 1 });
+        assert_eq!(s.doc().unwrap().selection.text.and_then(|t| t.cell).map(|c| (c.row, c.col)), Some((1, 0)));
     }
 
     #[test]
