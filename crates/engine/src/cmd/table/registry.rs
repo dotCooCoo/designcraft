@@ -401,7 +401,7 @@ fn table_specs() -> Vec<CommandSpec> {
             "Go to Row…",
             ["Table"],
             None,
-            "{row: number (from 1, counted within the section), section?: header|body|footer (default: body), story?, table?}: selects the row → {story, table, range, page: the page showing the row (from 1), or null when the row is overset}",
+            "{row: number (from 1, counted within the section), section?: header|body|footer (default: body), story?, table?}: selects the row → {story, table, range, page: the document page showing the row (from 1), spread: {kind: doc|parent, index} of the spread showing it, rowBounds: [x0, y0, x1, y1] of the row on that spread; each null when the row is overset, and page on a parent spread}",
             in_table_or_ids,
             go_to_row
         ),

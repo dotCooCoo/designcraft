@@ -74,33 +74,63 @@ pub(super) fn go_to_row(s: &mut Session, p: &Value) -> Result<Value> {
     let cells: Vec<(usize, usize)> = owners.get(start..start.saturating_add(nc)).map(<[_]>::to_vec).unwrap_or_default();
     let st = s.doc()?;
     let cs = s.cache.get(&st.doc, g.story, None);
+    // The part of the table that shows the row, its frame, and the cells that cover the row there.
     let placed = cs.frames.iter().find_map(|ft| {
-        ft.tables
-            .iter()
-            .filter(|t| t.table == g.table)
-            .flat_map(|t| t.cells.iter())
-            .find(|c| !c.repeated && cells.contains(&(c.row, c.col)))
-            .map(|c| (ft.frame, c.rect.center()))
+        ft.tables.iter().filter(|t| t.table == g.table).find_map(|t| {
+            let covering: Vec<designcraft_geom::Rect> =
+                t.cells.iter().filter(|c| !c.repeated && cells.contains(&(c.row, c.col))).map(|c| c.rect).collect();
+            (!covering.is_empty()).then_some((ft.frame, t, covering))
+        })
     });
-    let frame = placed.map(|(f, _)| f);
-    // The page under the row's first cell: a frame can span two pages of a spread.
-    let page = placed.and_then(|(f, at)| page_under(&st.doc, f, at)).map(|p| p + 1);
+    let frame = placed.as_ref().map(|(f, _, _)| *f);
+    let on_spread = frame.and_then(|f| frame_on_spread(&st.doc, &s.cache, g.story, f));
+    // The document page under the row's first cell: a frame can span two pages of a spread.
+    let page = placed.as_ref().zip(on_spread).and_then(|((_, _, covering), (spread, xf))| {
+        let designcraft_doc::SpreadRef::Doc(si) = spread else { return None };
+        let at = xf * covering.first()?.center();
+        Some(st.doc.first_page_of_spread(si) + st.doc.spreads.get(si)?.page_at_x(at.x).unwrap_or(0) + 1)
+    });
+    // The row on its spread: across, the cells that cover it; from top to bottom, the row alone, also
+    // inside cells merged across several rows.
+    let bounds = placed.as_ref().zip(on_spread).and_then(|((_, t, covering), (_, xf))| {
+        let across = covering.iter().copied().reduce(|a, b| a.union(b))?;
+        let &(_, top, bottom) = t.rows.iter().find(|r| r.0 == index)?;
+        Some(xf.transform_rect_bbox(designcraft_geom::Rect::new(across.x0, top, across.x1, bottom)))
+    });
+    let spread = on_spread.map(|(si, _)| si);
     // The caret is shown in the frame that shows the row.
     if let Some(f) = frame
         && let Some(t) = s.doc_mut()?.selection.text.as_mut()
     {
         t.frame = Some(f);
     }
-    Ok(json!({"story": r["story"], "table": r["table"], "range": r["range"], "page": page}))
+    Ok(json!({
+        "story": r["story"],
+        "table": r["table"],
+        "range": r["range"],
+        "page": page,
+        "spread": spread,
+        "rowBounds": bounds.map(|b| [b.x0, b.y0, b.x1, b.y1]),
+    }))
 }
 
-/// The page (from 0) under `at`, a point in the inner space of text frame `frame`.
-fn page_under(doc: &designcraft_doc::Document, frame: designcraft_doc::ItemId, at: designcraft_geom::Point) -> Option<usize> {
-    let loc = doc.find(frame)?;
-    let designcraft_doc::SpreadRef::Doc(si) = loc.spread else { return None };
-    let it = doc.item_at(&loc)?;
-    let p = doc.parent_xf(&loc) * doc.text_xf(it) * at;
-    Some(doc.first_page_of_spread(si) + doc.spread(loc.spread)?.page_at_x(p.x).unwrap_or(0))
+/// The spread (a document or parent spread) that text frame `frame` of story `sid` is on, and the
+/// transform from the frame's inner space to that spread's coordinates. An anchored frame is where
+/// its host story places it.
+fn frame_on_spread(
+    doc: &designcraft_doc::Document,
+    cache: &designcraft_compose::Cache,
+    sid: StoryId,
+    frame: designcraft_doc::ItemId,
+) -> Option<(designcraft_doc::SpreadRef, designcraft_geom::Affine)> {
+    let (spread, parent, it) = match doc.find(frame) {
+        Some(loc) => (loc.spread, doc.parent_xf(&loc), doc.item_at(&loc)?),
+        None => {
+            let p = cache.placement(doc, sid, frame)?;
+            (p.spread, p.xf, doc.anchored_item(frame)?)
+        }
+    };
+    Some((spread, parent * doc.text_xf(it)))
 }
 
 /// Move the caret to the next/previous cell (Tab / Shift-Tab), selecting its text. Tab in the last
@@ -303,6 +333,11 @@ mod go_to_row_tests {
         assert_eq!(s.execute("table.goToRow", &json!({"row": 20})).unwrap()["page"], 2);
         let frame = s.doc().unwrap().selection.text.and_then(|t| t.frame).map(|f| f.0);
         assert_eq!(frame, b["id"].as_u64(), "the caret is in the frame that shows the row");
+        // The row on its spread: one row tall, in the frame on the second spread.
+        let r = s.execute("table.goToRow", &json!({"row": 20})).unwrap();
+        assert_eq!(r["spread"], json!({"kind": "doc", "index": 1}));
+        let at: Vec<f64> = r["rowBounds"].as_array().map(|a| a.iter().filter_map(serde_json::Value::as_f64).collect()).unwrap_or_default();
+        assert!(at.len() == 4 && (at[3] - at[1] - 20.0).abs() < 1e-6 && at[0] >= 72.0 && at[2] <= 401.0 && at[1] >= 72.0 && at[3] <= 600.0, "{at:?}");
         // The header row repeats on page 2; the row itself is the one on page 1.
         assert_eq!(s.execute("table.goToRow", &json!({"row": 1, "section": "header"})).unwrap()["page"], 1);
     }
@@ -315,6 +350,68 @@ mod go_to_row_tests {
         s.execute("table.goToRow", &json!({"row": 2})).unwrap();
         assert_eq!(selected(&s), CellRange { r0: 2, c0: 0, r1: 2, c1: 1 });
         assert_eq!(s.doc().unwrap().selection.text.and_then(|t| t.cell).map(|c| (c.row, c.col)), Some((1, 0)));
+    }
+
+    #[test]
+    fn go_to_row_bounds_a_row_inside_cells_merged_across_rows() {
+        let mut s = session();
+        for (row, height) in [20, 10, 40, 20, 20].into_iter().enumerate() {
+            s.execute("table.setRowHeight", &json!({"row": row, "height": height, "mode": "exactly"})).unwrap();
+        }
+        // Every column's cell covers body rows 1 to 3 (table rows 1 to 3), so no cell starts in body row 2.
+        s.execute("table.merge", &json!({"rows": [1, 3], "cols": [0, 0]})).unwrap();
+        s.execute("table.merge", &json!({"rows": [1, 3], "cols": [1, 1]})).unwrap();
+        let bounds = |s: &mut Session, p: serde_json::Value| -> Vec<f64> {
+            let r = s.execute("table.goToRow", &p).unwrap();
+            r["rowBounds"].as_array().map(|a| a.iter().filter_map(serde_json::Value::as_f64).collect()).unwrap_or_default()
+        };
+        let header = bounds(&mut s, json!({"row": 1, "section": "header"}));
+        let row = bounds(&mut s, json!({"row": 2}));
+        assert_eq!((header.len(), row.len()), (4, 4));
+        assert!((row[1] - (header[3] + 10.0)).abs() < 1e-6 && (row[3] - row[1] - 40.0).abs() < 1e-6, "{header:?} {row:?}");
+        assert_eq!((row[0], row[2]), (header[0], header[2]), "the row spans the table across");
+    }
+
+    #[test]
+    fn go_to_row_finds_a_row_in_an_anchored_text_frame() {
+        use designcraft_doc::{AnchorPosition, AnchoredObject, Content, Item, ItemId, Shape, Story, StoryId, TextFrame};
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let host = s.execute("frame.create", &json!({"rect": [72, 72, 500, 400], "content": "text", "text": "Host text"})).unwrap();
+        // A text frame anchored in the host's text, its own story holding the table.
+        let sid = {
+            let d = std::sync::Arc::make_mut(&mut s.doc_mut().unwrap().doc);
+            let (fid, sid) = (ItemId(d.alloc()), StoryId(d.alloc()));
+            let mut story = Story::with_text(sid, "", Default::default());
+            story.frames.push(fid);
+            d.stories.insert(sid, std::sync::Arc::new(story));
+            let layer = d.item(ItemId(host["id"].as_u64().unwrap())).unwrap().layer;
+            let mut it =
+                Item::new(fid, layer, Shape::Rectangle, designcraft_geom::shapes::rectangle(designcraft_geom::Rect::new(0.0, 0.0, 200.0, 100.0)));
+            it.content = Content::Text(TextFrame { story: sid, options: Default::default() });
+            let host_story = StoryId(host["story"].as_u64().unwrap());
+            d.story_mut(host_story).unwrap().insert_object(4, AnchoredObject::new(it, AnchorPosition::default()));
+            sid
+        };
+        s.execute("text.select", &json!({"story": sid.0, "anchor": 0, "focus": 0})).unwrap();
+        s.execute("table.insert", &json!({"rows": 2, "cols": 2})).unwrap();
+        let r = s.execute("table.goToRow", &json!({"row": 2})).unwrap();
+        assert_eq!((r["page"].clone(), r["spread"].clone()), (json!(1), json!({"kind": "doc", "index": 0})), "{r}");
+        assert_eq!(r["rowBounds"].as_array().map(Vec::len), Some(4), "{r}");
+    }
+
+    #[test]
+    fn go_to_row_finds_a_row_on_a_parent_spread() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let f = s
+            .execute("frame.create", &json!({"spread": {"kind": "parent", "index": 0}, "rect": [72, 72, 400, 400], "content": "text", "text": ""}))
+            .unwrap();
+        s.execute("text.select", &json!({"story": f["story"], "anchor": 0, "focus": 0})).unwrap();
+        s.execute("table.insert", &json!({"rows": 2, "cols": 2})).unwrap();
+        let r = s.execute("table.goToRow", &json!({"row": 2})).unwrap();
+        assert_eq!((r["page"].clone(), r["spread"].clone()), (json!(null), json!({"kind": "parent", "index": 0})), "{r}");
+        assert_eq!(r["rowBounds"].as_array().map(Vec::len), Some(4), "{r}");
     }
 
     #[test]

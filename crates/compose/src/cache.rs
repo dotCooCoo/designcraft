@@ -103,6 +103,13 @@ impl Cache {
         self.get_with(doc, sid, on, true, 0)
     }
 
+    /// Where the host story places anchored text frame `fid`, one of story `sid`'s frames; `None` for
+    /// a frame on a spread.
+    pub fn placement(&self, doc: &Document, sid: StoryId, fid: designcraft_doc::ItemId) -> Option<crate::Placement> {
+        let placed = crate::placed::placements(doc, sid, &mut |host| self.get_with(doc, host, ShownOn::Own, true, 1));
+        placed.into_iter().find_map(|(id, p)| (id == fid).then_some(p))
+    }
+
     /// [`Cache::get_on`], wrapped by other stories' anchored objects only when `cross` is set, for
     /// a story `depth` hosts down from the story asked for.
     fn get_with(&self, doc: &Document, sid: StoryId, on: ShownOn, cross: bool, depth: usize) -> Arc<ComposedStory> {

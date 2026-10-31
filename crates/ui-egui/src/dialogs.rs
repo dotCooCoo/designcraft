@@ -4298,11 +4298,14 @@ fn confirm_part1(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
             let r = app.run("table.goToRow", p);
             match &r {
                 Ok(v) => {
-                    // The view moves when the row's page is not the page at the center of the view.
-                    if let Some(page) = v["page"].as_u64().and_then(|p| usize::try_from(p).ok()).and_then(|p| p.checked_sub(1))
-                        && crate::canvas::current_page(app) != Some(page)
-                    {
-                        crate::canvas::go_to_page(app, page);
+                    // The view scrolls the row to its middle, at the same zoom, on the row's page or another.
+                    let spread = serde_json::from_value::<designcraft_doc::SpreadRef>(v["spread"].clone()).ok();
+                    let bounds = v["rowBounds"].as_array().and_then(|a| {
+                        let n: Vec<f64> = a.iter().filter_map(Value::as_f64).collect();
+                        (n.len() == 4).then(|| designcraft_geom::Rect::new(n[0], n[1], n[2], n[3]))
+                    });
+                    if let (Some(spread), Some(b)) = (spread, bounds) {
+                        crate::canvas::go_to_spread_rect(app, spread, b);
                     }
                 }
                 Err(e) => {

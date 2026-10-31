@@ -3750,6 +3750,49 @@ fn go_to_row_dialog_selects_the_row_and_shows_its_page() {
     assert_eq!(crate::canvas::current_page(&app), Some(1), "the view goes to the page that shows the row");
 }
 
+/// Go to Row's OK scrolls the row to the middle of the view at the same zoom: a row off screen on the
+/// page in view, and a row on another page away from that page's center.
+#[test]
+fn go_to_row_dialog_scrolls_the_row_to_the_middle_of_the_view() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({"pages": 2, "facingPages": false})).unwrap();
+    app.canvas_rect = Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0)));
+    let a = app.run("frame.create", json!({"rect": [72, 72, 400, 200], "content": "text", "text": ""})).unwrap();
+    let b = app.run("frame.create", json!({"spread": 1, "rect": [72, 72, 400, 600], "content": "unassigned"})).unwrap();
+    app.run("text.thread", json!({"from": a["id"], "to": b["id"]})).unwrap();
+    app.run("text.select", json!({"story": a["story"], "anchor": 0, "focus": 0})).unwrap();
+    app.run("table.insert", json!({"rows": 20, "cols": 2, "headerRows": 1})).unwrap();
+    for row in 0..21 {
+        app.run("table.setRowHeight", json!({"row": row, "height": 20, "mode": "exactly"})).unwrap();
+    }
+    app.run("table.select", json!({"rows": [1, 1]})).unwrap();
+    crate::canvas::go_to_page(&mut app, 0);
+    crate::canvas::set_zoom(&mut app, 4.0);
+    // The row's middle and the view's middle, from top to bottom, on the canvas.
+    let middles = |app: &mut DesignApp, row: u64| {
+        let r = app.run("table.goToRow", json!({"row": row})).unwrap();
+        let spread: designcraft_doc::SpreadRef = serde_json::from_value(r["spread"].clone()).unwrap();
+        let n: Vec<f64> = r["rowBounds"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect();
+        let st = app.session.active().unwrap();
+        let slot = designcraft_tools::CanvasLayout::new(&st.doc, false).slot(spread).unwrap().xf;
+        let row_y = slot.transform_rect_bbox(designcraft_geom::Rect::new(n[0], n[1], n[2], n[3])).center().y;
+        let (v, rect) = (app.view().unwrap(), app.canvas_rect.unwrap());
+        (row_y, v.origin.y + rect.height() as f64 / 2.0 / v.zoom)
+    };
+    let x = app.view().unwrap().origin.x;
+    for row in ["3", "20"] {
+        crate::menus::activate(&mut app, "table.goToRow", &Value::Null);
+        ctl(&mut app, "ui.dialog.set", json!({"field": "row", "value": row}));
+        assert_eq!(ctl(&mut app, "ui.dialog.confirm", json!({}))["ok"], true);
+        let (row_y, view_y) = middles(&mut app, row.parse().unwrap());
+        assert!((row_y - view_y).abs() < 0.5, "row {row} is in the middle of the view: {row_y} against {view_y}");
+        let v = app.view().unwrap();
+        assert!((v.zoom - 4.0).abs() < 1e-9, "the zoom stays");
+        assert!((v.origin.x - x).abs() < 1e-9, "the row was in view across, so the view does not scroll sideways");
+    }
+    assert_eq!(crate::canvas::current_page(&app), Some(1));
+}
+
 /// Go to Row's OK goes to the row of the table in the document the dialog was opened for, even
 /// when another document became active meanwhile; when that document has closed, nothing is selected.
 #[test]
