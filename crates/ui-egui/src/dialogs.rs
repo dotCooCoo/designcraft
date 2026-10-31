@@ -1506,7 +1506,7 @@ fn doc_unit(app: &DesignApp) -> Unit {
 /// Table › Go to Row…: opens on the target table's first selected row, numbered within its header,
 /// body or footer rows.
 pub fn open_go_to_row(app: &mut DesignApp) {
-    let Ok(t) = app.run("table.get", json!({})) else { return };
+    let Ok(t) = app.run("table.get", json!({"cells": false})) else { return };
     let (h, f, r) = (count_at(&t, "headerRows"), count_at(&t, "footerRows"), count_at(&t["range"], "r0"));
     let nr = t["rows"].as_array().map_or(0, Vec::len);
     let (section, n) = if r < h {

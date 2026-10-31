@@ -72,14 +72,17 @@ pub(super) fn go_to_row(s: &mut Session, p: &Value) -> Result<Value> {
     let cells: Vec<(usize, usize)> = owners.get(start..start.saturating_add(nc)).map(<[_]>::to_vec).unwrap_or_default();
     let st = s.doc()?;
     let cs = s.cache.get(&st.doc, g.story, None);
-    let frame = cs.frames.iter().find_map(|ft| {
+    let placed = cs.frames.iter().find_map(|ft| {
         ft.tables
             .iter()
             .filter(|t| t.table == g.table)
-            .any(|t| t.cells.iter().any(|c| !c.repeated && cells.contains(&(c.row, c.col))))
-            .then_some(ft.frame)
+            .flat_map(|t| t.cells.iter())
+            .find(|c| !c.repeated && cells.contains(&(c.row, c.col)))
+            .map(|c| (ft.frame, c.rect.center()))
     });
-    let page = frame.and_then(|f| st.doc.page_of_item(f)).map(|p| p + 1);
+    let frame = placed.map(|(f, _)| f);
+    // The page under the row's first cell: a frame can span two pages of a spread.
+    let page = placed.and_then(|(f, at)| page_under(&st.doc, f, at)).map(|p| p + 1);
     // The caret is shown in the frame that shows the row.
     if let Some(f) = frame
         && let Some(t) = s.doc_mut()?.selection.text.as_mut()
@@ -87,6 +90,15 @@ pub(super) fn go_to_row(s: &mut Session, p: &Value) -> Result<Value> {
         t.frame = Some(f);
     }
     Ok(json!({"story": r["story"], "table": r["table"], "range": r["range"], "page": page}))
+}
+
+/// The page (from 0) under `at`, a point in the inner space of text frame `frame`.
+fn page_under(doc: &designcraft_doc::Document, frame: designcraft_doc::ItemId, at: designcraft_geom::Point) -> Option<usize> {
+    let loc = doc.find(frame)?;
+    let designcraft_doc::SpreadRef::Doc(si) = loc.spread else { return None };
+    let it = doc.item_at(&loc)?;
+    let p = doc.parent_xf(&loc) * doc.text_xf(it) * at;
+    Some(doc.first_page_of_spread(si) + doc.spread(loc.spread)?.page_at_x(p.x).unwrap_or(0))
 }
 
 /// Move the caret to the next/previous cell (Tab / Shift-Tab), selecting its text. Tab in the last
@@ -291,5 +303,29 @@ mod go_to_row_tests {
         assert_eq!(frame, b["id"].as_u64(), "the caret is in the frame that shows the row");
         // The header row repeats on page 2; the row itself is the one on page 1.
         assert_eq!(s.execute("table.goToRow", &json!({"row": 1, "section": "header"})).unwrap()["page"], 1);
+    }
+
+    #[test]
+    fn table_get_without_cells_reads_the_rows_alone() {
+        // The Go to Row dialog reads the row counts and the selection, not every cell's text.
+        let mut s = session();
+        s.execute("table.goToRow", &json!({"row": 2})).unwrap();
+        let t = s.execute("table.get", &json!({"cells": false})).unwrap();
+        assert!(t.get("cells").is_none(), "{t}");
+        assert_eq!((t["headerRows"].clone(), t["footerRows"].clone(), t["range"]["r0"].clone()), (json!(1), json!(1), json!(2)));
+        assert_eq!(t["rows"].as_array().map(Vec::len), Some(5));
+        assert_eq!(s.execute("table.get", &json!({})).unwrap()["cells"].as_array().map(Vec::len), Some(10));
+    }
+
+    #[test]
+    fn go_to_row_names_the_page_under_the_row_in_a_frame_across_the_spine() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 3, "facingPages": true})).unwrap();
+        // Pages 2 and 3 meet at x = 612; the frame's center is on page 3, the narrow table on page 2.
+        let f = s.execute("frame.create", &json!({"spread": 1, "rect": [400, 72, 900, 400], "content": "text", "text": ""})).unwrap();
+        s.execute("text.select", &json!({"story": f["story"], "anchor": 0, "focus": 0})).unwrap();
+        s.execute("table.insert", &json!({"rows": 2, "cols": 2})).unwrap();
+        s.execute("table.setColumnWidth", &json!({"cols": [0, 1], "width": 50})).unwrap();
+        assert_eq!(s.execute("table.goToRow", &json!({"row": 2})).unwrap()["page"], 2);
     }
 }

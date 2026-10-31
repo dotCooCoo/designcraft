@@ -416,6 +416,6 @@ fn table_specs() -> Vec<CommandSpec> {
             in_cell,
             |s, _| toggle_selection(s)
         ),
-        cmd!(query "table.get", "Get Table", [], None, "{story?, table?, rows?: [a,b] | row?, cols?: [a,b] | col?} → rows, columns, cells (text, spans, fill), options", in_table_or_ids, get),
+        cmd!(query "table.get", "Get Table", [], None, "{story?, table?, rows?: [a,b] | row?, cols?: [a,b] | col?, cells?: bool (false leaves out the cells)} → rows, columns, cells (text, spans, fill), options", in_table_or_ids, get),
     ]
 }
