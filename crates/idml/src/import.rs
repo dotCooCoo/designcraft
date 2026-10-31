@@ -139,6 +139,14 @@ struct Importer<'r> {
     /// Graphic `Self` → stand-in image for a linked file that can't be read.
     previews: &'r HashMap<String, Arc<Vec<u8>>>,
     next_id: u64,
+    /// Cells every table in this import has reserved. One table is capped, but a file chooses
+    /// how many tables it has, so the cap has to be document-wide as well (noted in review).
+    table_cells: usize,
+    /// Tables whose size the file claimed and did not get, warned about so far. A file chooses
+    /// how many tables it has, so a line each is its own flood (noted in review).
+    table_warnings: usize,
+    /// Whether the file has already been told its tables ran out of cells between them.
+    table_budget_spent: bool,
     settings: DocSettings,
     default_margins: Option<(Margins, Columns)>,
     swatches: Vec<Swatch>,
@@ -225,6 +233,9 @@ impl<'r> Importer<'r> {
             read_link,
             previews,
             next_id: 0,
+            table_cells: 0,
+            table_warnings: 0,
+            table_budget_spent: false,
             settings: DocSettings::default(),
             default_margins: None,
             swatches: specials,
@@ -284,7 +295,7 @@ impl<'r> Importer<'r> {
         self.next_id
     }
 
-    fn run(&mut self, _root: &El, top: &[El]) -> Result<()> {
+    fn read_preferences(&mut self, top: &[El]) {
         // Preferences first (page size, facing pages).
         for e in top {
             match e.local() {
@@ -341,6 +352,9 @@ impl<'r> Importer<'r> {
                 _ => {}
             }
         }
+    }
+
+    fn read_composite_fonts(&mut self, top: &[El]) {
         for e in top.iter().filter(|e| e.local() == "CompositeFont") {
             let name =
                 e.get("Name").map(str::to_string).unwrap_or_else(|| unescape_id(e.get("Self").unwrap_or("").trim_start_matches("CompositeFont/")));
@@ -365,6 +379,9 @@ impl<'r> Importer<'r> {
                 .collect();
             self.styles.composite_fonts.push(designcraft_doc::cjk::CompositeFont { name, entries });
         }
+    }
+
+    fn read_cjk_tables(&mut self, top: &[El]) -> Result<()> {
         for e in top.iter().filter(|e| e.local() == "KinsokuTable") {
             if e.get("CantBeginLineChars").is_some() || e.get("CantEndLineChars").is_some() {
                 self.kinsoku.insert(
@@ -394,6 +411,13 @@ impl<'r> Importer<'r> {
                 overrides,
             });
         }
+        Ok(())
+    }
+
+    fn run(&mut self, _root: &El, top: &[El]) -> Result<()> {
+        self.read_preferences(top);
+        self.read_composite_fonts(top);
+        self.read_cjk_tables(top)?;
         self.graphics(top);
         self.styles(top);
         if let Some(e) = top.iter().find(|e| e.local() == "FootnoteOption") {
