@@ -2255,6 +2255,8 @@ fn the_table_menu_follows_indesigns_order() {
         "-",
         "Distribute Rows Evenly",
         "Distribute Columns Evenly",
+        "-",
+        "Go to Row…",
     ];
     assert_eq!(labels, expected);
     // Cmd+Alt+Shift+T opens the dialog, as InDesign's; the engine command has no shortcut of

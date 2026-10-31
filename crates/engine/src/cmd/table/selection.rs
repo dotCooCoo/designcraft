@@ -24,7 +24,8 @@ pub(super) fn select(s: &mut Session, p: &Value) -> Result<Value> {
         _ => {}
     }
     let st = s.doc_mut()?;
-    let frame = st.selection.text.and_then(|t| t.frame);
+    // The caret's frame is kept only within the same story.
+    let frame = st.selection.text.filter(|t| t.story == g.story).and_then(|t| t.frame);
     st.selection = Selection {
         cells: Some(TableSel { story: g.story, table: g.table, range: r }),
         text: Some(TextSel { story: g.story, anchor: 0, focus: 0, frame, cell: Some(CellAddr { table: g.table, row: r.r0, col: r.c0 }) }),
@@ -79,6 +80,12 @@ pub(super) fn go_to_row(s: &mut Session, p: &Value) -> Result<Value> {
             .then_some(ft.frame)
     });
     let page = frame.and_then(|f| st.doc.page_of_item(f)).map(|p| p + 1);
+    // The caret is shown in the frame that shows the row.
+    if let Some(f) = frame
+        && let Some(t) = s.doc_mut()?.selection.text.as_mut()
+    {
+        t.frame = Some(f);
+    }
     Ok(json!({"story": r["story"], "table": r["table"], "range": r["range"], "page": page}))
 }
 
@@ -251,10 +258,19 @@ mod go_to_row_tests {
         let mut s = session();
         let t = s.execute("table.get", &json!({})).unwrap();
         let other = s.execute("frame.create", &json!({"rect": [72, 720, 500, 760], "content": "text", "text": "Notes"})).unwrap();
-        s.execute("text.select", &json!({"story": other["story"], "anchor": 0, "focus": 0})).unwrap();
+        // A click in the other frame: the caret is shown in that frame.
+        s.execute("text.placeCaret", &json!({"frame": other["id"], "point": [80, 730]})).unwrap();
+        assert_eq!(s.doc().unwrap().selection.text.and_then(|t| t.frame).map(|f| f.0), other["id"].as_u64());
         assert!(s.execute("table.goToRow", &json!({"row": 2})).is_err(), "no table named and none selected");
         s.execute("table.goToRow", &json!({"story": t["story"], "table": t["table"], "row": 2})).unwrap();
         assert_eq!(selected(&s), CellRange { r0: 2, c0: 0, r1: 2, c1: 1 });
+        let frame = s.doc().unwrap().selection.text.and_then(|t| t.frame).map(|f| f.0);
+        assert_ne!(frame, other["id"].as_u64(), "the caret is not left in the other story's frame");
+        // table.select naming the table from another story does not keep that story's frame either.
+        s.execute("text.placeCaret", &json!({"frame": other["id"], "point": [80, 730]})).unwrap();
+        s.execute("table.select", &json!({"story": t["story"], "table": t["table"], "what": "table"})).unwrap();
+        let frame = s.doc().unwrap().selection.text.and_then(|t| t.frame).map(|f| f.0);
+        assert_ne!(frame, other["id"].as_u64());
     }
 
     #[test]
@@ -271,6 +287,8 @@ mod go_to_row_tests {
         }
         assert_eq!(s.execute("table.goToRow", &json!({"row": 1})).unwrap()["page"], 1);
         assert_eq!(s.execute("table.goToRow", &json!({"row": 20})).unwrap()["page"], 2);
+        let frame = s.doc().unwrap().selection.text.and_then(|t| t.frame).map(|f| f.0);
+        assert_eq!(frame, b["id"].as_u64(), "the caret is in the frame that shows the row");
         // The header row repeats on page 2; the row itself is the one on page 1.
         assert_eq!(s.execute("table.goToRow", &json!({"row": 1, "section": "header"})).unwrap()["page"], 1);
     }
